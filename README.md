@@ -1,5 +1,12 @@
 # PoEMA (Latest)
 
+## Материалы
+- Текст ВКР: _[начать вкр]_
+- Информированное согласие: https://docs.google.com/document/d/1gqnH-0UHRRtEULmN0cyHtWI6rvtnJEkWDECOAf8a8jg/edit?usp=sharing
+- Опросы: https://docs.google.com/document/d/10nSQnDgQOvyQJvhUoKrkh3UNewA3lg3pZ2kKWCpYVts/edit?usp=sharing
+- ERD: https://www.figma.com/board/QI63dWlbOQZwetBe6aop1w/PoEMA-%E2%80%A2-ERD-(latest)?node-id=0-1&t=RTEelMnzM9vgujzB-1
+- C4: https://www.figma.com/board/bw27MrsdvgXlyPbN1CEZpa/PoEMA-%E2%80%A2-C4?node-id=0-1&t=bE05Sw4HxvyWHQhy-1
+
 ## План ВКР
 1. Вступление о методе ЕМА + упоминание всех второстепенных тем из DSR
 2. Характеризация важности показателя CR: надежность выводов, возможность построения моделей и т.д. 
