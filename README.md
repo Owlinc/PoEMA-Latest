@@ -4,8 +4,8 @@
 - **Для исследователей:** @poema_scibot
 - **Для участников:** @poema_partibot
   
-![Возможности ботов для исследователей](http://url/to/img.png](https://drive.google.com/file/d/1j4LywTz0p23olcbYmkdjO7k6NkBG74uN/view?usp=sharing)
-![Возможности ботов для участников](http://url/to/img.png](https://drive.google.com/file/d/1j4LywTz0p23olcbYmkdjO7k6NkBG74uN/view?usp=sharing)
+![Возможности ботов для исследователей](https://drive.google.com/file/d/1j4LywTz0p23olcbYmkdjO7k6NkBG74uN/view?usp=sharing)
+![Возможности ботов для участников](https://drive.google.com/file/d/1j4LywTz0p23olcbYmkdjO7k6NkBG74uN/view?usp=sharing)
 
 ## Материалы
 - Текст ВКР: _[начать вкр]_
