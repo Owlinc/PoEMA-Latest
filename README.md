@@ -12,6 +12,7 @@
 - C4: https://figma.fun/qHtQlH
 - Информированное согласие: https://docs.google.com/document/d/1gqnH-0UHRRtEULmN0cyHtWI6rvtnJEkWDECOAf8a8jg/edit?usp=sharing
 - Опросы: https://docs.google.com/document/d/10nSQnDgQOvyQJvhUoKrkh3UNewA3lg3pZ2kKWCpYVts/edit?usp=sharing
+- Презентация с пред. защиты: https://www.figma.com/proto/tV21TOQDWvEs7Ggrg4XIzJ/Nikita-Sharin-%E2%80%A2-PoEMA?page-id=2505%3A2&node-id=2506-3&p=f&viewport=-793%2C249%2C0.07&t=apCqL2CaBQiV7U57-1&scaling=scale-down&content-scaling=fixed
 
 ## План ВКР
 1. Вступление о методе ЕМА + упоминание всех второстепенных тем из DSR
