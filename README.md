@@ -1,5 +1,9 @@
 # PoEMA (Latest)
 
+## Боты
+- **Для исследователей:** @poema_scibot
+- ***Для участников:** @poema_partibot
+
 ## Материалы
 - Текст ВКР: _[начать вкр]_
 - Информированное согласие: https://docs.google.com/document/d/1gqnH-0UHRRtEULmN0cyHtWI6rvtnJEkWDECOAf8a8jg/edit?usp=sharing
