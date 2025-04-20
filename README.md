@@ -8,11 +8,10 @@
 ![Возможности ботов для участников](https://drive.google.com/uc?id=1qUhH3s_PKAFID8LMo2TvX78IvV5X7rco)
 
 ## Материалы
-- Текст ВКР: _[начать вкр]_
-- Информированное согласие: https://docs.google.com/document/d/1gqnH-0UHRRtEULmN0cyHtWI6rvtnJEkWDECOAf8a8jg/edit?usp=sharing
-- Опросы: https://docs.google.com/document/d/10nSQnDgQOvyQJvhUoKrkh3UNewA3lg3pZ2kKWCpYVts/edit?usp=sharing
 - ERD: https://figma.fun/6DdFmZ
 - C4: https://figma.fun/qHtQlH
+- Информированное согласие: https://docs.google.com/document/d/1gqnH-0UHRRtEULmN0cyHtWI6rvtnJEkWDECOAf8a8jg/edit?usp=sharing
+- Опросы: https://docs.google.com/document/d/10nSQnDgQOvyQJvhUoKrkh3UNewA3lg3pZ2kKWCpYVts/edit?usp=sharing
 
 ## План ВКР
 1. Вступление о методе ЕМА + упоминание всех второстепенных тем из DSR
