@@ -4,7 +4,7 @@
 - **Для исследователей:** @poema_scibot
 - **Для участников:** @poema_partibot
   
-![Возможности ботов для исследователей](https://drive.google.com/uc?id=1qUhH3s_PKAFID8LMo2TvX78IvV5X7rco)
+![Возможности ботов для исследователей](https://drive.google.com/uc?id=11WJRXVPVUT4iDxMoz6a9II49eeXiODH7)
 ![Возможности ботов для участников](https://drive.google.com/uc?id=1qUhH3s_PKAFID8LMo2TvX78IvV5X7rco)
 
 ## Материалы
