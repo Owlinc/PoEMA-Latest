@@ -13,28 +13,42 @@ REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%
 # ОБЩИЕ ФУНКЦИИ
 # 1. Функция для получения расписания отправок
 def get_user_beeps():
-    REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M')
-    sql_request = f"""
-        SELECT * FROM {BEEPS_TABLE}
-        WHERE CAST(time_to_send AS String) LIKE '{REAL_CURR_TIME}%' AND message_id IS NULL;
-        """
-    return POOL.retry_operation_sync(
-        lambda s: s.transaction().execute(
-            sql_request,
-            commit_tx=True,
-            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-        )
-    )
+
+    while True:
+        try:
+            
+            REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M')
+            sql_request = f"""
+                SELECT * FROM {BEEPS_TABLE}
+                WHERE 
+                    (CAST(time_to_send AS String) LIKE '{REAL_CURR_TIME}%' AND message_id IS NULL)
+                    OR 
+                    ((enterance_beep = True OR exit_beep = True) AND message_id IS NULL)
+                """
+            return POOL.retry_operation_sync(
+                lambda s: s.transaction().execute(
+                    sql_request,
+                    commit_tx=True,
+                    settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+                )
+            )
+            break
+
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            print("Retrying in 1 second...")
+            time.sleep(1)
 
 
 # 2. Функция для получения вопросов
-def get_survey_quest(study_id, question_id):
+def get_survey_quest(study_id, question_id, survey):
     
     sql_request = f"""
         SELECT * FROM {SURVEYS_TABLE}
-        WHERE study_id == '{study_id.decode('utf-8')}' AND question_num == {question_id};
+        WHERE study_id == '{study_id.decode('utf-8')}' AND question_num == {question_id} AND survey_name = '{survey}';
         """
     print(sql_request)
+    
     question_raw = POOL.retry_operation_sync(
         lambda s: s.transaction().execute(
             sql_request,
@@ -50,9 +64,12 @@ def get_survey_quest(study_id, question_id):
 # 3. Функция для обновления бипа
 def update_beep_db(beep_id, response, message_id):
 
+    print('we are here')
+    print(message_id)
+
     sql_update = f"""
         UPDATE {BEEPS_TABLE}
-        SET message_id = {message_id}, answer = '{response}'
+        SET message_id = {message_id}, answer = '{response}', closed = True
         WHERE beep_id = {beep_id};
     """
     return POOL.retry_operation_sync(
@@ -103,13 +120,14 @@ def get_next_beep(user_id, message_id, question_id):
 def write_particip_id(particip_id, username):
 
     try:
-        sql_upload = f"""
-            INSERT INTO {USER_IDS_TABLE} (user_id, username)
-            VALUES ('{particip_id}', '{username}');
+        sql_update = f"""
+            UPDATE {PARTICIPATION_TABLE}
+            SET particip_id = '{particip_id}'
+            WHERE particip_username = '{username}';
         """
         return POOL.retry_operation_sync(
             lambda s: s.transaction().execute(
-                sql_upload,
+                sql_update,
                 commit_tx=True,
                 settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
             )
@@ -118,25 +136,7 @@ def write_particip_id(particip_id, username):
         return False
 
 
-# 6. Извлечение username по ID
-def get_username(particip_id):
-
-    particip_id = particip_id.decode('utf-8')
-    username = f"""
-        SELECT username	FROM {USER_IDS_TABLE}
-        WHERE user_id = '{particip_id}';
-    """
-    username = POOL.retry_operation_sync(
-        lambda s: s.transaction().execute(
-            username,
-            commit_tx=True,
-            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-        ))[0].rows[0]['username']
-    
-    return(username.decode('utf-8'))
-
-
-# 7. Функция для получения длины опросника
+# 6. Функция для получения длины опросника
 def get_survey_len(study_id):
 
     get_survey_items = f"""
@@ -150,12 +150,98 @@ def get_survey_len(study_id):
             settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
         ))[0].rows
     
-    return(len(survey))
+    return len(survey)
+
+# 7. Функция для получения типов вопрсоов
+def get_questions_types(study_id, survey_name):
+
+    get_survey_items = f"""
+        SELECT question_type
+        FROM surveys
+        WHERE study_id = '{study_id}' AND survey_name = '{survey_name}'
+        ORDER BY question_num
+    """
+
+    questions = POOL.retry_operation_sync(
+        lambda s: s.transaction().execute(
+            get_survey_items,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+        ))[0].rows
+    
+    questions_types = []
+    for i in range(0, len(questions)):
+        questions_types.append(questions[i]['question_type'].decode('utf-8'))
+
+    return questions_types
+
+# 8. Функция для проверки того прошел ли человек входной опрос
+def check_enterance_beeps():
+
+    while True:
+        try:
+            # Проверочный запрос
+            get_query = f"""
+            SELECT participant_id
+            FROM {BEEPS_TABLE}
+            GROUP BY participant_id
+            HAVING 
+            COUNT(*) = COUNT_IF(enterance_beep = TRUE AND closed = TRUE);
+            """
+            users_to_handle_raw = POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                get_query,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+            ))[0].rows
+
+            users_to_handle = []
+            for user in users_to_handle_raw:
+                users_to_handle.append(user['participant_id'].decode('utf-8'))
+            return(users_to_handle)
+            break
+                
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            print("Retrying in 1 second...")
+            time.sleep(1)
+
+# 9. Функция для проверки того прошел ли человек выходной опрос
+def check_exit_beeps():
+    while True:
+        try:
+            # Проверочный запрос
+            get_query = f"""
+                SELECT participant_id
+                FROM {BEEPS_TABLE}
+                GROUP BY participant_id
+                HAVING 
+                    COUNT_IF(exit_beep = TRUE) > 0 AND
+                    COUNT_IF(exit_beep = TRUE) = COUNT_IF(exit_beep = TRUE AND closed = TRUE);
+            """
+            users_to_handle_raw = POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                get_query,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+            ))[0].rows
+
+            users_to_handle = []
+            for user in users_to_handle_raw:
+                users_to_handle.append(user['participant_id'].decode('utf-8'))
+            return(users_to_handle)
+            break
+                
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            print("Retrying in 1 second...")
+            time.sleep(1)  
 
 
 # ФОМРИРВАНИЕ БИПОВ
 # 1. Функция для загрузки бипов в таблицу
-def upload_beeps(beeps_dict):
+def upload_beeps(beeps_dict, survey_type="base"):
+    
     while True:
         try:
             # Получим наибольшее ID
@@ -181,18 +267,28 @@ def upload_beeps(beeps_dict):
     values = []
     for beep in beeps_dict:
         max_beep_id += 1
-        values.append(
-            f"({max_beep_id}, '{beep['participant_id']}', '{beep['study_id']}', {beep['question_id']}, '{beep['question_type']}', "
-            f"'[expected]', datetime('{beep['time_to_send']}'), datetime('{beep['expire_time']}'), '[not generated]')"
-        )
-    print(values)
+        if survey_type == 'base':
+            values.append(
+                f"({max_beep_id}, '{beep['participant_id']}', '{beep['study_id']}', {beep['question_id']}, '{beep['question_type']}', "
+                f"'[expected]', datetime('{beep['time_to_send']}'), datetime('{beep['expire_time']}'), '[not generated]', False, '{beep['survey']}', False, False)"
+            )
+        elif survey_type == 'enterance':
+            values.append(
+                f"({max_beep_id}, '{beep['participant_id']}', '{beep['study_id']}', {beep['question_id']}, '{beep['question_type']}', "
+                f"'[expected]', datetime('{beep['time_to_send']}'), NULL, '[not generated]', False, '{beep['survey']}', True, False)"
+            )       
+        elif survey_type == 'exit':
+            values.append(
+                f"({max_beep_id}, '{beep['participant_id']}', '{beep['study_id']}', {beep['question_id']}, '{beep['question_type']}', "
+                f"'[expected]', datetime('{beep['time_to_send']}'), NULL, '[not generated]', False, '{beep['survey']}', False, True)"
+            )   
 
     while True:
         try:
             # Выполним массовую вставку
             if values:
                 sql_request = f"""
-                    INSERT INTO {BEEPS_TABLE} (beep_id, participant_id, study_id, question_id, question_type, answer, time_to_send, expire_time, attr_sent_analysis) 
+                    INSERT INTO {BEEPS_TABLE} (beep_id, participant_id, study_id, question_id, question_type, answer, time_to_send, expire_time, attr_sent_analysis, closed, survey, enterance_beep, exit_beep) 
                     VALUES {', '.join(values)};
                 """
                 POOL.retry_operation_sync(
@@ -210,7 +306,7 @@ def upload_beeps(beeps_dict):
             time.sleep(1)
 
 
-# 2. Функция для определения типа вопроса
+# 2. Функция для определения типа вопроса (больше не используется)
 def get_question_type(study_id, question_id):
 
     while True:
@@ -236,10 +332,10 @@ def get_question_type(study_id, question_id):
             time.sleep(1)    
 
 
-# 4. Функция для проверки окончания исследования (UPD)
+# 3. Функция для проверки окончания исследования
 def check_study_end(participant_id):
 
-    # 4.1. Получаем последнее времмя отправк для участника
+    # 3.1. Получаем последнее время отправки для участника
     while True:
         try:
             sql_request = f"""
@@ -253,7 +349,9 @@ def check_study_end(participant_id):
                     sql_request,
                     commit_tx=True,
                     settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-                ))[0].rows[0]['most_recent_expire_time']   
+                ))[0].rows[0]['most_recent_expire_time']
+                
+            latest_beep_time = datetime.fromtimestamp(latest_beep_time).strftime('%Y-%m-%dT%H:%M:%SZ')
             break
 
         except Exception as e:
@@ -261,7 +359,7 @@ def check_study_end(participant_id):
             print("Retrying in 1 second...")
             time.sleep(1)
 
-    # 4.2. Проверяем нет ли хотя бы одной строки, которая была бы равна [expected]
+    # 3.2. Проверяем нет ли хотя бы одной строки, которая была бы равна [expected]
     while True:
         try:
             sql_request = f"""
@@ -288,18 +386,19 @@ def check_study_end(participant_id):
             time.sleep(1) 
 
     # Возвращаем True, если у нас закончилось исследование и False – в обратном случае
+    print(f'study_end {study_end}')
     return bool(study_end)
 
 
-# 5. Функция для обработки просроченных бипов (UPD)
+# 4. Функция для обработки просроченных бипов (UPD)
 def handle_expired_beeps():
 
-    # 5.1. Меняем [expected] на [expired]
+    # 4.1. Меняем [expected] на [expired]
     REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M')
     update_query = f"""
     UPDATE {BEEPS_TABLE}
-    SET answer = '[expired]'
-    WHERE CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%' AND answer = "[expected]";
+    SET answer = '[expired]', closed = True
+    WHERE CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%' AND closed != True;
     """
     POOL.retry_operation_sync(
     lambda s: s.transaction().execute(
@@ -308,7 +407,7 @@ def handle_expired_beeps():
         settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
     ))
 
-    # 5.2. Получаем пользователей для проверки (лист)
+    # 4.2. Получаем пользователей для проверки (лист)
     get_query = f"""
     SELECT DISTINCT participant_id FROM {BEEPS_TABLE}
     WHERE CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%';
@@ -323,11 +422,11 @@ def handle_expired_beeps():
     for user in users_to_check_raw:
         users_to_check.append(user['participant_id'].decode('utf-8'))
 
-    # 5.3. Создаем словари для блокировки участия в опросе 
+    # 4.3. Создаем словари для блокировки участия в опросе 
     get_query_sec = f"""
     SELECT DISTINCT participant_id, message_id
     FROM {BEEPS_TABLE}
-    WHERE answer = "[expired]" AND message_id IS NOT NULL;
+    WHERE answer = "[expired]" AND message_id IS NOT NULL AND CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%' ;
     """
     dicts_to_edit_raw = POOL.retry_operation_sync(
     lambda s: s.transaction().execute(
@@ -335,6 +434,7 @@ def handle_expired_beeps():
         commit_tx=True,
         settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
     ))[0].rows
+    
     dicts_to_edit = []
     for user in dicts_to_edit_raw:
         messsage_to_edit = {}
@@ -344,15 +444,18 @@ def handle_expired_beeps():
 
     # Возвращаем лист с пользователями для дальнейшей проверки и словарь для блокировки участия в опросе   
     return users_to_check, dicts_to_edit
+    
 
-
-# 6. Функция для обновления бипов
+# 5. Функция для обновления бипов
 def update_beep_data(message_id, user_id):
+
+    print("i'm writing message id")
+    
     REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M')
     update_query = f"""
     UPDATE {BEEPS_TABLE}
     SET message_id = {message_id}
-    WHERE CAST(time_to_send AS String) LIKE '{REAL_CURR_TIME}%' AND participant_id = '{user_id}';
+    WHERE (CAST(time_to_send AS String) LIKE '{REAL_CURR_TIME}%' AND participant_id = '{user_id}') OR ((enterance_beep = True or exit_beep = True) and message_id is NULL);
     """
     POOL.retry_operation_sync(
     lambda s: s.transaction().execute(
@@ -362,7 +465,7 @@ def update_beep_data(message_id, user_id):
     ))
 
 
-# 7. Удаление предыдущих биопв
+# 6. Удаление предыдущих биопв
 def delete_beeps(participant_id):
 
     # Очистка данных о бипах
@@ -382,7 +485,7 @@ def delete_beeps(participant_id):
         return False
 
 
-# 8. Получение самоо последнего бипа, для которого ожидается ответ
+# 7.1. Получение самого последнего бипа, для которого ожидается ответ
 def get_beep_to_write(participant_id):
 
     sql_request = f"""
@@ -404,9 +507,365 @@ def get_beep_to_write(participant_id):
             smallest_question_num = beep['question_id']
             expected_beep = beep
 
-    beep_id = expected_beep['beep_id']
+    # На случай если все beep'ы отправлены
+    beep_id = expected_beep.get('beep_id', None)
+
+    if beep_id is None:
+        return None, None, None, None
+    
     question_id = expected_beep['question_id']
     message_id = expected_beep['message_id']
+    question_type = expected_beep['question_type'].decode('utf-8')
     
-    return beep_id, question_id, message_id
+    return beep_id, question_id, message_id, question_type
+
+# 7.2. Получение информации о бипе по его ID
+def get_beep_data(beep_id):
+
+    print('its beep prpoblem')
+    sql_request = f"""
+        SELECT * FROM {BEEPS_TABLE}
+        WHERE beep_id == {beep_id};
+        """
+
+    beep = POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        sql_request,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))[0].rows[0]
+
+    question_id = beep['question_id']
+    message_id = beep['message_id']
+    question_type = beep['question_type'].decode('utf-8')
+    
+    return question_id, message_id, question_type
+
+
+# 8. Изменение часового пояса бипов
+def change_beeps_tz(participant_id, change_value):
+
+    sign = '+' if change_value >= 0 else '-'
+    abs_value = abs(change_value)
+    print(change_value, sign, abs_value)
+
+    sql_request = f"""
+        UPDATE beeps
+        SET 
+            time_to_send = time_to_send {sign} DateTime::IntervalFromHours({abs_value}),
+            expire_time = expire_time {sign} DateTime::IntervalFromHours({abs_value})
+        WHERE 
+            enterance_beep = false
+            AND exit_beep = false
+            AND participant_id = '{participant_id}'
+            AND answer = "[expected]"
+            AND time_to_send >= CurrentUtcTimestamp();
+        """
+
+    print(sql_request)
+    POOL.retry_operation_sync(
+        lambda s: s.transaction().execute(
+            sql_request,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+        ))
        
+
+# УЧАСТИЕ В ИССЛЕДОВАНИИ
+# 1. Функция для получения информации об исследовании
+def get_study_info(study_id):
+
+    # Запрос для получения данных об исследовании
+    sql_request = f"""
+        SELECT * FROM {STUDIES_TABLE}
+        WHERE study_id == '{study_id}';
+        """
+
+    results = POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        sql_request,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))[0].rows
+
+    # Возвращаем результаты
+    if len(results) > 0:
+        return results[0]
+    else:
+        return None
+
+
+# 2. Функция для проверки наличия респондента в базе
+def check_particip_studies(particip_username):
+
+    # Запрос для получения данных об исследовании
+    sql_request = f"""
+        SELECT COUNT(*) AS count FROM {PARTICIPATION_TABLE} WHERE particip_username = '{particip_username}';
+        """
+
+    results = POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        sql_request,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))[0].rows[0]['count']
+
+    # Возвращаем результаты
+    if results == 0:
+        return False
+    else:
+        return True
+
+
+# 3.1. Функция для обновления участия (по юзернему)
+def update_particip(particip_username, update_dict):
+
+    # Форматер значений
+    def format_value(value):
+        if isinstance(value, (int, float)):  # Для числовых
+            return f"{value}"
+        elif isinstance(value, str):  # Для текстовых
+            return f"'{value}'"
+        else:
+            raise ValueError(f"Unsupported value type: {type(value)}")  # Для непонятных
+
+    # Construct the SQL update contents
+    update_contents_sql = ", ".join(
+        [f"{key} = {format_value(value)}" for key, value in update_dict.items()]
+    )
+
+    # Запрос для обнолвения участия
+    sql_update = f"""
+        UPDATE {PARTICIPATION_TABLE}
+        SET {update_contents_sql}
+        WHERE particip_username = '{particip_username}';
+    """
+    POOL.retry_operation_sync(
+        lambda s: s.transaction().execute(
+            sql_update,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+        )
+    )
+
+
+# 3.2. Функция для обновления участия (по ID)
+def update_particip_by_id(particip_id, update_dict):
+
+    # Форматер значений
+    def format_value(value):
+        if isinstance(value, (int, float)):  # Для числовых
+            return f"{value}"
+        elif isinstance(value, str):  # Для текстовых
+            return f"'{value}'"
+        else:
+            raise ValueError(f"Unsupported value type: {type(value)}")  # Для непонятных
+
+    # Construct the SQL update contents
+    update_contents_sql = ", ".join(
+        [f"{key} = {format_value(value)}" for key, value in update_dict.items()]
+    )
+
+    # Запрос для обнолвения участия
+    sql_update = f"""
+        UPDATE {PARTICIPATION_TABLE}
+        SET {update_contents_sql}
+        WHERE particip_id = '{particip_id}';
+    """
+    
+    while True:
+        try:
+
+            POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+            sql_update,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)))
+            break
+
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            print("Retrying in 1 second...")
+            time.sleep(1)
+    
+
+# 4. Функция для извлечения информации об участии
+def get_particip_info(particip_data, particip_id=False):
+
+    # Запрос для получения данных об исследовании
+    if particip_id:
+
+        sql_request = f"""
+        SELECT * FROM {PARTICIPATION_TABLE}
+        WHERE particip_id == '{particip_data}';
+        """
+
+    else:
+        sql_request = f"""
+        SELECT * FROM {PARTICIPATION_TABLE}
+        WHERE particip_username == '{particip_data}';
+        """
+
+    results = POOL.retry_operation_sync(
+        lambda s: s.transaction().execute(
+            sql_request,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))[0].rows
+
+    # Возвращаем результаты
+    if len(results) > 0:
+        return results[0]
+    else:
+        return None
+
+    
+# 5. Функция для удаления участника
+def delete_particip(particip_username):
+
+    # Удаление участника
+    remove_beeps = f"""
+        DELETE FROM {PARTICIPATION_TABLE}
+        WHERE particip_username = '{particip_username}';
+        """
+    try:
+        POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                remove_beeps,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+            ))
+
+        # Возвращаем результаты
+        print('participant deleted')
+        return True
+
+    except Exception as error:
+
+        # Возвращаем результаты
+        return False
+
+
+# ДАННЫЕ УЧАСТНИКА
+# 1. Функция для получения информации об исследовании
+def get_particip_settings(particip_id):
+
+    # Запрос для получения данных об исследовании
+    sql_request = f"""
+        SELECT * FROM {PARTICIPANTS_TABLE}
+        WHERE particip_id == '{particip_id}';
+        """
+
+    results = POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        sql_request,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))[0].rows
+
+    # Возвращаем результаты
+    if len(results) > 0:
+        return results[0]
+    else:
+        return None
+
+# 2. Функция для проверки наличия настроек
+def check_particip_settings(particip_id):
+
+    # Запрос для получения данных об исследовании
+    sql_request = f"""
+        SELECT COUNT(*) AS count FROM {PARTICIPANTS_TABLE} WHERE particip_id = '{particip_id}';
+        """
+
+    results = POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        sql_request,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))[0].rows[0]['count']
+
+    # Возвращаем результаты
+    if results == 0:
+        return False
+    else:
+        return True
+
+# 3. Запись настроек участника
+def write_particip_settings(variables, values):
+
+    # Запрос для записи данных
+    sql_update = f"""
+        REPLACE INTO {PARTICIPANTS_TABLE} ({variables})
+        VALUES ({values});
+    """
+    print(sql_update)
+    POOL.retry_operation_sync(
+        lambda s: s.transaction().execute(
+            sql_update,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+        )
+    )
+
+
+# 4. Обновление настроек участника
+def update_particip_settings(participant_id, variables, values):
+
+    set_clause = ", ".join(f"{var} = {val}" for var, val in zip(variables, values))
+
+    # Запрос для записи данных
+    sql_update = f"""
+        UPDATE {PARTICIPANTS_TABLE}
+        SET {set_clause}
+        WHERE particip_id = '{participant_id}';
+    """
+    
+    print(sql_update)
+    POOL.retry_operation_sync(
+        lambda s: s.transaction().execute(
+            sql_update,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+        )
+    )
+
+
+# 5. Удаление настроек участника
+def delete_particip_settings(particip_id):
+
+    # Удаление участника
+    remove_beeps = f"""
+        DELETE FROM {PARTICIPANTS_TABLE}
+        WHERE particip_id = '{particip_id}';
+        """
+    try:
+        POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                remove_beeps,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+            ))
+            
+        # Возвращаем результаты
+        print('participants settings deleted')
+        return True
+
+    except Exception as error:
+
+        # Возвращаем результаты
+        return False
+
+# 6. Увеличение кол-ва изменение часовой зоны
+def tz_changes_increase(participant_id):
+
+    # Получаем текущее кол-во изменений часовой зоны
+    tz_changes = get_particip_settings(participant_id)['tz_changes']
+    print(tz_changes)
+    print('tz_changes')
+
+    # Увеличиваем кол-во изменений на 1
+    tz_changes += 1
+
+    # Записываем в базу
+    update_particip_settings(participant_id, ["tz_changes"], [tz_changes])
+
