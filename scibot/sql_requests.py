@@ -9,7 +9,7 @@ import string
 
 # ДРУГИЕ СКРИПТЫ
 from config import *
-from utils import *
+# from utils import *
 from yandex_gpt_handler import *
 
 # КОНФИГ
@@ -87,7 +87,6 @@ def analyse_opens_sql(chat_id):
 
     # Если нет подходящих записей, то сворачиваемся и информируем пользователя об этом
     if len(opens_dicts) == 0:
-        print("no_data!")
         return OPEN_ATR_NO_DATA
 
     # 2.2 Записываем результаты анализа обратно в таблицу
@@ -114,7 +113,7 @@ def analyse_opens_sql(chat_id):
 # 3. Удаление опросника
 def delete_survey_sql(participant_id):
 
-    # Очистка данных об эффективности расписаний
+    # Очистка данных об опросе
     remove_efficiency_rq = f"""
         DELETE FROM {SURVEYS_TABLE}
         WHERE study_id = '{participant_id}';
@@ -126,39 +125,41 @@ def delete_survey_sql(participant_id):
                 commit_tx=True,
                 settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
             ))
-        print('survey deleted')
+
     except Exception as error:
-        return False
+        return error
 
 
 # 4. Добавление опросника
-def upload_survey_sql(survey_df, chat_id):
+def upload_surveys_sql(survey_df, chat_id):
 
     # Подготовим данные для массового вставки
     survey_df = survey_df.reset_index()
     values = []
+    study_num = 0
+    
     for index, row in survey_df.iterrows():
         
         # Генерируем рандомный ID
         characters = string.ascii_letters + string.digits
-        str_id = ''.join(random.choices(characters, k=8))
+        str_id = f"{index:04d}_" + ''.join(random.choices(characters, k=6))
+
         values.append(
-            f"('{str_id}', '{chat_id}', {row['question_num']}, '{row['question_type']}', {row['rows_amount']}, "
+            f"('{str_id}', '{chat_id}', '{row['survey_name']}', {row['question_num']}, '{row['question_type']}', {row['rows_amount']}, "
             f"'{row['question']}', '{row['comment']}', '{row['response_1']}', '{row['response_2']}', '{row['response_3']}', "
             f"'{row['response_4']}', '{row['response_5']}', '{row['response_6']}', '{row['response_7']}', '{row['response_8']}', "
             f"'{row['response_9']}', '{row['response_10']}')"
         )
-
-        print(values)
 
     # Осуществим массовую загрузку
     while True:
         try:
             if values:
                 sql_request = f"""
-                    INSERT INTO {SURVEYS_TABLE} (id, study_id, question_num, question_type, rows_amount, question, comment, response_1, response_2, response_3, response_4, response_5, response_6, response_7, response_8, response_9, response_10) 
+                    INSERT INTO {SURVEYS_TABLE} (id, study_id, survey_name, question_num, question_type, rows_amount, question, comment, response_1, response_2, response_3, response_4, response_5, response_6, response_7, response_8, response_9, response_10) 
                     VALUES {', '.join(values)};
                 """
+                print(sql_request)
                 POOL.retry_operation_sync(
                     lambda s: s.transaction().execute(
                         sql_request,
@@ -172,3 +173,172 @@ def upload_survey_sql(survey_df, chat_id):
             print(f"An error occurred: {e}")
             print("Retrying in 1 second...")
             time.sleep(1)
+
+
+# ФУНКЦИИ ДЛЯ РАБОТЫ С ИССЛЕДОВАНИЕМ
+# 1. Функция для получения информации об исследовании
+def get_study_info(study_id):
+
+    # Запрос для получения данных об исследовании
+    sql_request = f"""
+        SELECT * FROM {STUDIES_TABLE}
+        WHERE study_id == '{study_id}';
+        """
+
+    results = POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        sql_request,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))[0].rows
+
+    # Возвращаем результаты
+    if len(results) > 0:
+        return results[0]
+    else:
+        return None
+
+
+# 2. Функция для инициации исследования
+def initaite_study(participant_id, study_name):
+
+    # Запрос для создания исследования
+    insert_request = f"""
+        INSERT INTO {STUDIES_TABLE} (study_id, name, status) 
+        VALUES ('{participant_id}', '{study_name}', 'initiated');
+        """
+    POOL.retry_operation_sync(
+        lambda s: s.transaction().execute(
+            insert_request,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(25).with_operation_timeout(25)
+        )
+    )  
+
+
+# 3. Функция для обновления исследования
+def update_study(participant_id, update_dict):
+
+    # Форматер значений
+    def format_value(value):
+        if isinstance(value, (int, float)):  # Для числовых
+            return f"{value}"
+        elif isinstance(value, str):  # Для текстовых
+            return f"'{value}'"
+        else:
+            raise ValueError(f"Unsupported value type: {type(value)}")  # Для непонятных
+    
+    # Construct the SQL update contents
+    update_contents_sql = ", ".join(
+        [f"{key} = {format_value(value)}" for key, value in update_dict.items()]
+    )
+
+    update_query = f"""
+    UPDATE {STUDIES_TABLE}
+    SET 
+        {update_contents_sql}
+    WHERE 
+        study_id = '{participant_id}';
+    """
+    print(update_query)
+
+    POOL.retry_operation_sync(
+        lambda s: s.transaction().execute(
+            update_query,
+            commit_tx=True,
+            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))
+
+
+# 4.1. Функция для удаления исследования
+def delete_study(participant_id):
+
+    # Очистка данных об исследовании
+    remove_study = f"""
+        DELETE FROM {STUDIES_TABLE}
+        WHERE study_id = '{participant_id}';
+        """
+    try:
+        POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                remove_study,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+            ))
+        print('study deleted')
+        return True
+
+    except Exception as error:
+        return False
+
+# 4.2. Функция для удаления информации об участниках
+def delete_participation(participant_id):
+
+    # Очистка данных об исследовании
+    remove_particip = f"""
+        DELETE FROM {PARTICIPATION_TABLE}
+        WHERE study_id = '{participant_id}';
+        """
+    try:
+        POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                remove_particip,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+            ))
+
+    except Exception as error:
+        return False
+
+# 5. Функция для инициации участия
+def initaite_particip(particip_username, study_id):
+
+    try:
+        # Запрос для инициации участия
+        insert_request = f"""
+            INSERT INTO {PARTICIPATION_TABLE} (particip_username, study_id, status) 
+            VALUES ('{particip_username}', '{study_id}', 'awaited');
+            """
+        POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                insert_request,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(25).with_operation_timeout(25)
+            )
+        ) 
+    
+    except Exception as error:
+        return error
+
+
+# 6. Функция для получения информации об опросниках исследования
+def get_study_surveys(study_id):
+
+    try:
+        # Запрос для получения информации об опросниках
+        request = f"""
+            SELECT survey_name, MIN(id) AS id
+            FROM surveys
+            WHERE study_id = '{study_id}'
+            GROUP BY survey_name
+            ORDER BY id;
+            """
+        surveys = POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                request,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(25).with_operation_timeout(25)
+            )
+        )[0].rows
+
+        surveys_list = []
+        for i in range(0, len(surveys)):
+            surveys_list.append(surveys[i]['survey_name'].decode('utf-8'))
+        
+        # Возвращаем лист с опросниками и количество опросников
+        return surveys_list, len(surveys)
+    
+    except Exception as error:
+        print(error)
+        return error
+
