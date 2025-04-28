@@ -9,6 +9,7 @@
 
 ## Видео-демо
 - **Бот для исследователей**: https://youtu.be/SFrtk01ZCC4
+- **Бот для участников**: https://youtu.be/7cJDGUZ8EcI
 
 ## Материалы
 - ERD: https://figma.fun/6DdFmZ
