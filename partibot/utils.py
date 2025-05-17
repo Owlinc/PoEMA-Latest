@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, date
 import time
 import random
 import re
+import math
+from transliterate import translit
 
 # OTHER SCRIPTS
 from config import *
@@ -23,7 +25,8 @@ def send_message(chat_id, text):
             return response.json().get("result", {}).get("message_id")
             break
         else:
-            print("Ошибка при отправке:", response.text)
+            print(url)
+            print("Ошибка при отправке сообщения с текстом:", response.text)
             time.sleep(0.1)
     
     url = URL + f"sendMessage?parse_mode=markdown&chat_id={chat_id}&text={SENDING_ERROR_TEXT}"
@@ -43,7 +46,11 @@ def send_typing_effect(chat_id):
 
 # 1. Функция для отправки сообщения c текстом и клавиатурой
 def send_message_with_k(chat_id, text, keyboard):
-    url = URL + f"sendMessage?text={text}&chat_id={chat_id}&parse_mode=markdown&reply_markup={keyboard}"
+
+    if keyboard:
+        url = URL + f"sendMessage?text={text}&chat_id={chat_id}&parse_mode=markdown&reply_markup={keyboard}"
+    else:
+        url = URL + f"sendMessage?text={text}&chat_id={chat_id}&parse_mode=markdown"
     
     start_time = time.time()
     while time.time() - start_time < 15:
@@ -52,8 +59,10 @@ def send_message_with_k(chat_id, text, keyboard):
             return response.json().get("result", {}).get("message_id")
             break
         else:
-            print("Ошибка при отправке:", response.text)
+            print(url)
+            print("Ошибка при отправке сообщения c текстом и клавиатурой:", response.text)
             time.sleep(0.1)
+            return None
     
     # Отправка сообщения об ошибке
     error_url = URL + f"sendMessage?parse_mode=markdown&chat_id={chat_id}&text={SENDING_ERROR_TEXT}"
@@ -89,14 +98,14 @@ def send_question_message(chat_id, text, keyboard=None):
     while time.time() - start_time < 15:
         res = requests.get(url)
         if res.status_code == 200:
-            print('updating beep_data via send_question_message')
             message_id = res.json()["result"]["message_id"]
             user_id = res.json()["result"]["chat"]["id"]
+            print(message_id, user_id)
             update_beep_data(message_id, user_id)
             return message_id
-            break
         else:
-            print("Ошибка при отправке:", res.text)
+            print(url)
+            print("Ошибка при отправке сообщения c текстом (опрос):", res.text)
             time.sleep(0.1)
 
 
@@ -112,10 +121,16 @@ def edit_question_message(chat_id, message_id, text, keyboard=None):
     while time.time() - start_time < 15:
         res = requests.get(url)
         if res.status_code == 200:
+            print('edited message')
             return res.json().get("result", {}).get("message_id")
         else:
-            print("Ошибка при отправке:", res.text)
-            time.sleep(0.1)
+            print(url)
+            print("Ошибка при редактировании:", res.text)
+            print(res.json()['description'])
+            if res.json()['description'] == ALREADY_CHANGED_ERR:
+                return
+            else:
+                time.sleep(0.1)
             
 
 # 5. Функция для создания клавитауры вопроса
@@ -137,8 +152,12 @@ def create_keyboard(question_df, participant_id, beep_id, question_id, sent_time
     if question_type in ("single_choice", "multiple_choice"):
 
         # Определяем количество строк
-        rows_amount = question_df['rows_amount']
-        buttons_per_row = len(response_options) // rows_amount
+        buttons_per_row = question_df['buttons_in_row']
+        if len(response_options) < buttons_per_row:
+            buttons_per_row = 1
+
+        # Рассчитываем количество строк, округляя в большую сторону
+        rows_amount = math.ceil(len(response_options) / buttons_per_row)
 
     # Создание клавиатуры для вопросов типа multiple choice
     if question_type == "single_choice":
@@ -162,18 +181,26 @@ def create_keyboard(question_df, participant_id, beep_id, question_id, sent_time
         # Формируем клавиатуру
         keyboard = json.dumps({"inline_keyboard": raw_keyboard})
 
-    # Создание клавиатуры для вопросов типа single choice
+    # Создание клавиатуры для вопросов типа multiple choice
     elif question_type == "multiple_choice":
+
+        # Декодируем варианты
+        decoded_options = [opt.decode('utf-8').strip() for opt in response_options]
+        max_length = max(len(text) for text in decoded_options)
 
         # Проходимся по каждой строке
         for i in range(rows_amount):
             row = []
+
             for j in range(buttons_per_row):
                 index = i * buttons_per_row + j
-                if index < len(response_options):
-                    callback_text = sanitize_callback_data(response_options[index].decode('utf-8').strip())
+
+                if index < len(decoded_options):
+                    original_text = decoded_options[index]
+                    padded_text = original_text.ljust(max_length, SPACER)
+                    callback_text = sanitize_callback_data(original_text)
                     row.append({
-                        "text": "⬜️ " + response_options[index].decode('utf-8'),
+                        "text": "⬜️ " + padded_text,
                         "callback_data": f"mc_{beep_id}_{callback_text}_{question_id}"
                     })
 
@@ -287,7 +314,7 @@ def send_beep(participant_id, question_text, keyboard):
     send_question_message(participant_id, question_text, keyboard)
 
 
-# 9.1. Функция заглушка для отображения прогресса
+# 9.1. Функция заглушка для отображения прогресса (не используется)
 def display_loading(user_id, message_id, stop_event):
     loading_texts = ["_Загрузка_", "_Загрузка._", "_Загрузка.._", "_Загрузка..._"]
     i = 0
@@ -299,16 +326,25 @@ def display_loading(user_id, message_id, stop_event):
 
 
 # 9.2. Функция для отправки бипов в том же сообщении  
-def update_message(user_id, message_id, question_id, old_beep_loc=False):
+def update_message(user_id, message_id, question_id):
 
     next_beep = get_next_beep(user_id, message_id, question_id)
-
     if not next_beep:
-        question_text = SURVEY_COMPLETE_MESSAGE
-        edit_question_message(user_id, message_id, question_text) 
+        # edit_question_message(user_id, message_id, SURVEY_COMPLETE_MESSAGE) - старое
+        edit_question_message(user_id, message_id, ANSWER_COMPLETE_MESSAGE)
+        new_message_id = send_message(user_id, SURVEY_COMPLETE_MESSAGE)
+        print('changed status for participating')
         update_particip_by_id(user_id,  {'status': "participating"})
+
+        # Проверяем закончилось ли исследование и завершаем при необходимости
+        handle_study_completion(user_id)
+
+        # Возвращаем new_message_id
+        return None, None
         
     else:
+
+        new_beep_id = next_beep['beep_id']
         try:
             expire_time = next_beep.get('expire_time', None)
             question_df = get_survey_quest(next_beep['study_id'], next_beep['question_id'], next_beep['survey'].decode('utf-8'))
@@ -331,12 +367,19 @@ def update_message(user_id, message_id, question_id, old_beep_loc=False):
                 )
 
             # Отправка нового бипа
-            # В случае локации (если запрашивалась предыдущим бипом или будет запрашиваться в нынешнем) – новым сообщением
-            if old_beep_loc or question_df['question_type'].decode('utf-8') == 'location':
-                send_beep(user_id, question_text, keyboard)
             # В случае вопроса или открытого – через редактирование старого сообщения
+            if keyboard:
+                new_message_id = send_message_with_k(user_id, question_text, keyboard)
             else:
-                edit_question_message(user_id, message_id, question_text, keyboard)
+                new_message_id = send_message(user_id, question_text)
+            # edit_question_message(user_id, message_id, question_text, keyboard) - старое
+            edit_question_message(user_id, message_id, ANSWER_COMPLETE_MESSAGE)
+            set_beep_sent(next_beep['beep_id'])
+
+            # Возвращаем new_message_id
+            print(new_beep_id)
+            print(new_message_id)
+            return new_message_id, new_beep_id
 
         except Exception as e:
             print(e)
@@ -347,7 +390,8 @@ def update_message(user_id, message_id, question_id, old_beep_loc=False):
 def form_beep_dicts(chat_id, study_id, surveys_len, days, time_to_send, expire_time, questions_types, survey):
     
     beeps_list = []
-    for day in range (0, days + 1):
+    # for day in range (0, days + 1):
+    for day in range (0, days):
         for beep in range(int(surveys_len)):
             beep_dict = {}
             beep_dict['participant_id'] = chat_id
@@ -439,10 +483,18 @@ def form_schedule(chat_id, study_info, particip_info, timezone, base_surveys):
     # Форируем строку с временем прохождения опросов
     completion_tl = extract_time_range(study_info['completion_tl'].decode('utf-8'))
 
+    # Формируем стартовую дату рассылки опросов
+    if study_info['start_date']:
+        parsed_date = datetime.utcfromtimestamp(study_info['start_date']).date()
+    else:
+        parsed_date = (datetime.utcnow() + timedelta(hours=UTC_SHIFT, days=0)).date()
+    start_date = parsed_date.strftime("%d.%m.%Y")
+
     # Форируем строку с временем / временными интервалами для отправки 
     prompting_time = extract_and_sort_times(study_info['prompting_time'].decode('utf-8'))
 
     send_message(chat_id, PARTICIP_INFO_MESSAGE.format(
+        start_date,
         completion_tl, 
         study_info['duration'],
         prompting_time
@@ -485,13 +537,17 @@ def form_schedule(chat_id, study_info, particip_info, timezone, base_surveys):
                 start_time = datetime.strptime(start_str, "%H:%M")
                 end_time = datetime.strptime(end_str, "%H:%M")
 
-                for day in range(study_info['duration'] + 1):
+                for day in range(study_info['duration']):
                     
                     # Генерируем случайное количество секунд в пределах интервала
                     random_seconds = random.randint(0, int((end_time - start_time).total_seconds()))
                     
                     # Комбинируем с текущей датой, добавляем случайные секунды и корректируем часовой пояс
-                    time_to_send = datetime.combine(date.today() + timedelta(days=day), start_time.time()) + timedelta(seconds=random_seconds, hours=timezone)
+                    if study_info['start_date']:
+                        time_to_send = datetime.utcfromtimestamp(study_info['start_date']).date()
+                    else:
+                        time_to_send = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).date()
+                    time_to_send = datetime.combine(time_to_send + timedelta(days=day), start_time.time()) + timedelta(seconds=random_seconds) - timedelta(hours=timezone)
                     
                     # Сохраняем сгенерированное время отправки
                     time_to_send_arr.append(time_to_send)
@@ -505,10 +561,15 @@ def form_schedule(chat_id, study_info, particip_info, timezone, base_surveys):
             # Обрабатываем одиночную временную точку
             else:
                 base_time = datetime.strptime(time_to_send, "%H:%M").time()
-                for day in range(study_info['duration'] + 1):
+                # for day in range(study_info['duration'] + 1):
+                for day in range(study_info['duration']):
                     
                     # Комбинируем с текущей датой и добавляем часовую зону
-                    time_to_send = datetime.combine(date.today() + timedelta(days=day), base_time) + timedelta(hours=timezone)
+                    if study_info['start_date']:
+                        time_to_send = datetime.utcfromtimestamp(study_info['start_date']).date()
+                    else:
+                        time_to_send = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).date()
+                    time_to_send = datetime.combine(time_to_send + timedelta(days=day), base_time) - timedelta(hours=timezone)
                     
                     # Сохраняем время отправки
                     time_to_send_arr.append(time_to_send)
@@ -594,7 +655,7 @@ def clean_selected_options(rows):
         for option in row:
             text = option.get("text", "")
             if text.startswith("✅"):
-                option["text"] = "⬜️ " + text[1:].strip()
+                option["text"] = "⬜️" + text[1:].strip()
     
     # Формируем клавиатуру из очищенных вариантов
     keyboard = json.dumps({"inline_keyboard": rows})
@@ -608,18 +669,20 @@ def handle_mc_clean_text(chose_anything, message_text):
     if chose_anything:
         message_text = message_text + f"%0A%0A_{KEYBOARD_CLEARED}_"
         changes = True
+
     else:
 
         if KEYBOARD_CLEARED in message_text:
-            message_text = message_text.replace(KEYBOARD_CLEARED, "")
-            message_text = re.sub(r'(%0A)+$', '', message_text.strip())
+            message_text = message_text.replace(f"_{KEYBOARD_CLEARED}_", "")
+            message_text =  message_text.rstrip('\n')
             changes = True
         
         if CANNOT_CLEAR_KEYBOARD not in message_text:
-            message_text = message_text + f"_{CANNOT_CLEAR_KEYBOARD}_"
+            message_text = message_text + f"%0A%0A_{CANNOT_CLEAR_KEYBOARD}_"
             changes = True
 
     return message_text, changes
+
 
 # 17. Функция для обновления сообщения при очистке клавиатуры
 def remove_mc_clean_text(message_text):
@@ -628,13 +691,12 @@ def remove_mc_clean_text(message_text):
         message_text = message_text.replace(keyword, '')
 
     message_text = re.sub(r'(%0A)+$', '', message_text)
-
     return message_text
+
 
 # 18. Функция для обработки выбора
 def handle_mc_choice(chosen_option, rows):
     
-    print(rows)
 
     # Проверяем каждый вариант – если он выбран, записываем его
     for row in rows:
@@ -685,8 +747,45 @@ def check_text_input(text_input):
     # Возвращаем корректность ввода и обновленный текст
     return correct, upd_input
 
-# ФОРМАТИРОВАНИЕ КОЛБЭКоВ
-def sanitize_callback_data(text: str, max_bytes: int = 30):
+# 21. Функция для проверки оконания исследования
+def handle_study_completion(user_id):
+
+    # Проверяем, закончилось ли исследование
+    print('we are here')
+    if check_study_end(user_id):
+
+        # Получаем информацию участника
+        particip_info = get_particip_info(user_id, True)
+
+        # Получаем информацию об исследовании
+        study_info = get_study_info(particip_info['study_id'].decode('utf-8'))
+
+        # Проверяем наличие выходного опросника
+        exit_survey = study_info['exit_survey']
+        if exit_survey:
+            # Уведомляем участника
+            send_message(user_id, EXIT_SURVEY_MESSAGE)
+
+            # Декодируем опросник
+            exit_survey = exit_survey.decode('utf-8')
+
+            # Обновляем статус
+            update_particip_by_id(user_id, {'status': "waiting_exit_survey"})
+
+            # Формируем расписание
+            form_schedule_es(user_id, study_info, particip_info, exit_survey, "exit")
+
+        else:
+            # Завершаем участие
+            update_particip_by_id(user_id, {'status': "ended"})
+
+            time.sleep(10)
+            send_message(user_id, THE_END_MESSAGE)
+
+
+# ФОРМАТИРОВАНИЕ КОЛБЭКОВ
+# 22. Функция для сокращения колбэков
+def sanitize_callback_data(text: str, max_bytes: int = 20):
     
     # 1. Удаление эмодзи
     text = re.sub(
@@ -702,10 +801,16 @@ def sanitize_callback_data(text: str, max_bytes: int = 30):
         '', text, flags=re.UNICODE
     )
 
-    # 2. Трим пробелов
+    # 3. Трим пробелов
     text = text.strip()
 
-    # 3. Обрезка по байтам
+    # 4. Транслитерация
+    text = translit(text, 'ru', reversed=True)
+
+    # 5. Удаление странных символов (оставляем только латиницу, цифры, _ и -)
+    text = re.sub(r'[^a-zA-Z0-9_ \-]', '', text)
+
+    # 6. Обрезка по байтам
     encoded = text.encode('utf-8')
     if len(encoded) <= max_bytes:
         return text
@@ -720,4 +825,3 @@ def sanitize_callback_data(text: str, max_bytes: int = 30):
             result += char
             byte_len += char_bytes
         return result
-
