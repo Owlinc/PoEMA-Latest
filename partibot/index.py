@@ -30,7 +30,7 @@ def handler(event, context):
             # Парсим колбэк
             data = message['callback_query']['data']
             chat_id = message['callback_query']['message']['chat']['id']
-            username = message['callback_query']['message']['chat']['username']
+            username = message['callback_query']['message']['chat']['username'].lower()
             question_text = message['callback_query']['message']['text']
             formatting = message['callback_query']['message'].get('entities') 
 
@@ -66,6 +66,9 @@ def handler(event, context):
 
                 # Получаем информацию о бипе
                 question_id, message_id, question_type = get_beep_data(beep_id)
+                if question_type == "error":
+                    send_message(chat_id, OVERLOAD_ERROR)
+                    return {'statusCode': 200}
 
                 # Получаем клавиатуру
                 mc_keyboard = message['callback_query']['message']['reply_markup']['inline_keyboard']
@@ -81,11 +84,19 @@ def handler(event, context):
 
                     # Если что-то выбрано – идем дальше
                     if chose_anything:
-                        update_message(chat_id, message_id, question_id)
+
+                        # Обновляем сообщение – подставляем новый бип
+                        new_message_id, new_beep_id = update_message(chat_id, message_id, question_id)
+
+                        # Обновляем данные о бипах в таблице
+                        if new_message_id:
+                            update_beep_db(new_beep_id, new_message_id)
+                        return {'statusCode': 200}
 
                     # Если ничего не выбрано – отправляем сообщение об этом 
                     else:
                         send_message(chat_id, NO_CHOSEN_OPTIONS)
+                        return {'statusCode': 200}
 
                 # Очистка выбора
                 elif action == "clean":
@@ -109,13 +120,15 @@ def handler(event, context):
                     edit_question_message(chat_id, message_id, question_text, mc_keyboard)
 
                     # Обновляем данные о бипе в таблице
-                    update_beep_db(beep_id, "[empty]", message_id)
+                    update_beep_db(beep_id, message_id, "[empty]")
+                    return {'statusCode': 200}
                     
                 # Выбор
                 else:
 
                     # Информируем о начале работы
-                    edit_question_message(chat_id, message_id, LOADING_TEXT)
+                    base_keyboard = json.dumps({"inline_keyboard": mc_keyboard})
+                    edit_question_message(chat_id, message_id, LOADING_TEXT, base_keyboard)
 
                     # Обновляем текст сообщения
                     question_text = remove_mc_clean_text(question_text)
@@ -128,7 +141,7 @@ def handler(event, context):
                     chose_anything, chosen_options = extract_selected_options(raw_keyboard)
 
                     # Обновляем данные о бипе в таблице
-                    update_beep_db(beep_id, chosen_options, message_id)
+                    update_beep_db(beep_id, message_id, chosen_options)
                 
                 return {'statusCode': 200}
 
@@ -145,6 +158,11 @@ def handler(event, context):
 
                     # Записываем ID респа в базу
                     write_particip_id(chat_id, username)
+
+                    # Проверяем наличие настроек
+                    particip_settings = get_particip_settings(chat_id)
+                    if not particip_settings:
+                        write_particip_settings("particip_id", f"'{chat_id}'")
 
                     # Обновляем статус: ожидаем согласие
                     update_particip(username, {'status': "agreement waiting"})
@@ -171,14 +189,16 @@ def handler(event, context):
 
                     # Проверяем наличие часовой зоны
                     particip_settings = get_particip_settings(chat_id)
-                    
-                    if not particip_settings:
+                    timezone = particip_settings.get('timezone')
+                    print(f"timezone: {timezone}")
+
+                    # Информируем о подписани соглашения
+                    send_message(chat_id, AGREEMENT_SIGNED)
+
+                    if timezone is None:
                         send_message(chat_id, TZ_REQUEST)
                         update_particip(username, {'status': "timezone_waiting"})
                         return {'statusCode': 200}
-
-                    # Получаем часовую зону
-                    timezone = particip_settings['timezone']
 
                     # Извлекаем базовые опросы
                     base_surveys = study_info['base_surveys'].decode('utf-8').split(', ')
@@ -242,9 +262,7 @@ def handler(event, context):
                 
                 # Ошибся
                 elif callback_data[1] == "cancel":
-                    print("was error")
                     message_id = get_particip_settings(chat_id)['focal_message_id']
-                    print(message_id)
                     unsend_message(chat_id, message_id)
                     update_particip(username, {'status': previous_status})
                 
@@ -287,6 +305,7 @@ def handler(event, context):
                     if len(callback_data) == 4:
                         delete_particip(username)
                         delete_particip_settings(chat_id)
+                        delete_beeps(chat_id)
                    
                     else:
                         print(f"callback_data: {callback_data}")
@@ -295,6 +314,7 @@ def handler(event, context):
                         # Удаление только участия в исследовании
                         if entity_to_delete == "study":
                             delete_particip(username)
+                            delete_beeps(chat_id)
 
                         # Удаление только настроек
                         elif entity_to_delete == "settings":
@@ -316,23 +336,21 @@ def handler(event, context):
                 beep_id = callback_data[0]
                 print(f"beep_id: {beep_id}")
                 
-                # Получаем информацию о бипе, который ожидает ответа
+                # Получаем информацию о бипе, на который был дан ответ
                 question_id, message_id, question_type = get_beep_data(beep_id)
+                print(f"message_id: {message_id}")
 
                 # Информируем о начале работы
                 edit_question_message(chat_id, message_id, LOADING_TEXT)
 
-                # Проверяем не является ли бип, ожидающий ответа, запросом локации
-                if question_type == 'location':
-                    old_beep_loc = True
-                else:
-                    old_beep_loc = False
-
                 # Обновляем сообщение – подставляем новый бип
-                update_message(chat_id, message_id, question_id, old_beep_loc)
+                new_message_id, new_beep_id = update_message(chat_id, message_id, question_id)
 
-                # Обновляем данные о бипе в таблице
-                update_beep_db(beep_id, response, message_id)
+                # Обновляем данные о бипах в таблице
+                print('updating beep!')
+                update_beep_db(beep_id, message_id, response)
+                if new_message_id:
+                    update_beep_db(new_beep_id, new_message_id)
 
             return {'statusCode': 200}
 
@@ -345,7 +363,7 @@ def handler(event, context):
 
             # Извлекаем username участника
             if 'username' in message['message']['chat']:
-                username = message['message']['chat']['username']
+                username = message['message']['chat']['username'].lower()
             else:
                 username = 'NoUsername'
 
@@ -461,12 +479,7 @@ def handler(event, context):
 
                 # Получаем информацию о бипе, который ожидает ответа
                 beep_id, question_id, message_id, question_type = get_beep_to_write(chat_id)
-
-                # Проверяем не является ли бип, ожидающий ответа, запросом локации
-                if question_type == 'location':
-                    old_beep_loc = True
-                else:
-                    old_beep_loc = False
+                print(beep_id, question_id, message_id, question_type)
 
                 # Проверяем сообщение
                 correct, upd_input = check_text_input(message_text)
@@ -474,11 +487,16 @@ def handler(event, context):
                 # Если отправлен текст – все ок, идем дальше
                 if correct and question_type == 'open':
 
+                    print("geting open answers")
                     # Обновляем сообщение – подставляем новый бип
-                    update_message(chat_id, message_id, question_id, old_beep_loc)
+                    new_message_id, new_beep_id = update_message(chat_id, message_id, question_id)
 
-                    # Обновляем данные о бипе в таблице
-                    update_beep_db(beep_id, upd_input, message_id)
+                    # Обновляем данные о бипах в таблице
+                    print("updating_beep_db")
+                    update_beep_db(beep_id, message_id, message_text)
+                    if new_message_id:
+                        update_beep_db(new_beep_id, new_message_id)
+                    return {'statusCode': 200} 
 
                 # Если не ок – отправляем сообщение об этом
                 elif question_type != 'open':
@@ -486,21 +504,24 @@ def handler(event, context):
                     
                 else: 
                     send_message(chat_id, INCORRECT_INPUT)
+                return {'statusCode': 200} 
             
             elif particip_status == "timezone_waiting":
                 
                 # Проверяем ввод
                 correct, message_text, timezone = hour_validator(message_text)
+
                 if not correct:
                     send_message(chat_id, INCORRECT_HOUR)
 
                 else:
 
                     # Записываем информацию о часовом поясе участника
-                    write_particip_settings("particip_id, timezone, tz_changes", f"'{chat_id}', {timezone}, 0")
+                    update_particip_settings(chat_id, ["timezone", "tz_changes"], [timezone, 0])
                 
                     # Проверяем наличие входного опросника
                     enterance_survey = study_info['enterance_survey']
+
                     if enterance_survey:
 
                         # Убираем битовую кодировку входного опросника
@@ -515,6 +536,9 @@ def handler(event, context):
 
                     else:
 
+                        # Извлекаем базовые опросы
+                        base_surveys = study_info['base_surveys'].decode('utf-8').split(', ')
+
                         # Обновляем статус: участие
                         update_particip(username, {'status': "participating"})
 
@@ -528,19 +552,21 @@ def handler(event, context):
             elif particip_status == "setting_tz": 
 
                 # Проверяем ввод
-                correct, message_text, timezone = hour_validator(message_text)
+                correct, message_text, new_timezone = hour_validator(message_text)
                 if not correct:
                     send_message(chat_id, INCORRECT_HOUR)
 
                 else:
                     # Смотрим, есть ли часовой пояc у участника 
                     particip_settings = get_particip_settings(chat_id)
-                    if particip_settings['timezone']:
+                    timezone = particip_settings.get('timezone')
+                    if timezone is not None:
+                        print("working on it!")
                         old_tz = particip_settings['timezone']
-                        change_tz = timezone - old_tz
+                        change_tz = new_timezone - old_tz
 
                     # Записываем часовой пояс в базу
-                    update_particip_settings(chat_id, ["timezone"], [timezone])
+                    update_particip_settings(chat_id, ["timezone"], [new_timezone])
 
                     # Меняем время бипов
                     if particip_settings['timezone']:
@@ -550,7 +576,7 @@ def handler(event, context):
                         print("NAAAAH")
 
                     # Информируем о настройке часового пояса
-                    send_message(chat_id, TZ_SETTED.format(timezone))
+                    send_message(chat_id, TZ_SETTED.format(new_timezone))
 
                     # Увеличиваем кол-во изменений часового пояса
                     tz_changes_increase(chat_id)
@@ -562,6 +588,8 @@ def handler(event, context):
 
         # Отправляем бипы по расписанию
         beeps_to_send_df = get_user_beeps()
+        print(f'beeps to send: {beeps_to_send_df}')
+        
         sent_to_id = []
         if beeps_to_send_df:
             for row in beeps_to_send_df[0].rows:
@@ -570,52 +598,21 @@ def handler(event, context):
                     send_beep(participant_id, question_text, keyboard)
                     sent_to_id.append(row['participant_id'])
                     # Говорим системе, что от респондента ожидаются ответы
+                    print('changed status to answers_expected')
                     update_particip_by_id(row['participant_id'].decode('utf-8'), {'status': "answers_expected"})
-                    
         
         # Работаем с истекшими бипами
         users_to_check = check_expired_beeps()
         if users_to_check:
+
+            print('there are user to check')
             for user_id in users_to_check:
 
-                # Проверяем закончилось ли исследование
-                if check_study_end(user_id):
+                # Обновляем статус на участие
+                update_particip_by_id(user_id, {'status': "participating"})
 
-                    # Смотрим есть ли выходной опросник
-                    # Получаем информацию участника
-                    particip_info = get_particip_info(user_id, True)
-
-                    # Получаем информацию об исследовании
-                    study_info = get_study_info(particip_info['study_id'].decode('utf-8'))
-
-                    # Если выходной опросник есть, то отправляем его
-                    exit_survey = study_info['exit_survey']
-                    if exit_survey:
-
-                        # Уведомляем участника о выходном опросе
-                        send_message(user_id, EXIT_SURVEY_MESSAGE)
-
-                        # Убираем битовую кодировку входного опросника
-                        exit_survey = exit_survey.decode('utf-8')
-
-                        # Обновляем статус: ожидание входного опроса 
-                        update_particip_by_id(user_id, {'status': "waiting_exit_survey"})
-
-                        # Формируем раписание
-                        form_schedule_es(user_id, study_info, particip_info, exit_survey, "exit")
-                        
-                    # Если выходного опросника нет, то завершаем исследование
-                    else:
-                        # Обновляем статус: завершил участия
-                        update_particip_by_id(user_id,  {'status': "ended"})
-
-                        # Если закончилось, то завершаем его
-                        time.sleep(10)
-                        send_message(user_id, THE_END_MESSAGE)
-
-                # Если исследование не закончилось, то просто говорим системе о том, что опрос окончился
-                else:
-                    update_particip_by_id(user_id,  {'status': "participating"})
+                # Проверяем закончилось ли исследование и завершаем при необходимости
+                handle_study_completion(user_id)
 
         # Проверяем прохождение входных опросов
         particips_to_set = check_enterance_beeps()
@@ -644,31 +641,36 @@ def handler(event, context):
         # Проверяем прохождение выходного опросника
         particips_to_end = check_exit_beeps()
         if particips_to_end:
+            print(particips_to_end)
+            
             for particip_id in particips_to_end:
 
+                print(particip_id)
                 # Если исследование ещё не завершено, то завршаем его
                 particip_info = get_particip_info(particip_id, True)
                 status = particip_info.get('status')
+
                 if status:
                     status = status.decode('utf-8')
                 else:
-                    return {'statusCode': 200}
+                    continue
 
-                if status == "waiting_exit_survey":
-
-                    # Обновляем статус: завершил участия
+                if status in ("waiting_exit_survey", "answers_expected", "participating"):
+                    
+                    # Обновляем статус: завершил участие
+                    print(f"saying goodbye to {particip_id}")
                     update_particip_by_id(particip_id,  {'status': "ended"})
 
                     # Если закончилось, то завершаем его
-                    time.sleep(10)
+                    time.sleep(5)
                     send_message(particip_id, THE_END_MESSAGE)
                 
                 else:
-                    return {'statusCode': 200}
+                    print('status to say goodbye: no')
+                    continue
 
 
     return {
         'statusCode': 200,
         'body': 'Everityhing is cool: beeps are beeping, schedules are scheduling, and users are using!'
     }
-    
