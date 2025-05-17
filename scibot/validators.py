@@ -59,18 +59,30 @@ def survey_validator(sheet_name, df):
         if not df["question_type"].isin(["open", "multiple_choice", "single_choice", "location"]).all():
             return False, None, "Колонка 'question\_type' должна содержать только значения 'open', 'multiple\_choice', или 'single\_choice' и не может быть пустой (опросник {sheet_name})"
         
-        if not (1 <= len(df) <= 22):
-            return False, None, "Количество вопросов должно находиться в диапозоне от 1 до 22 (опросник {sheet_name})"
+        if not (1 <= len(df) <= 26):
+            return False, None, "Количество вопросов должно находиться в диапозоне от 1 до 26 (опросник {sheet_name})"
         
-        df["rows_amount"] = df["rows_amount"].fillna(1).astype(int)
-        if not df["rows_amount"].between(1, 10).all():
-            return False, None, "Колонка 'rows\_amount' должна содержать значения от 1 до 10 (опросник {sheet_name})"
+        df["buttons_in_row"] = df["buttons_in_row"].fillna(1).astype(int)
+        if not (df["buttons_in_row"].between(1, 8).all()):
+            return False, None, "Колонка 'buttons\_in\_row' должна содержать значения от 1 до 8 (опросник {sheet_name})"
+
+        # # Список колонок c вариантами ответов
+        # response_columns = [f"response_{i}" for i in range(1, 11)]
+
+        # # Проверка того, что кол-во кнопок в строке не больше кол-ва кнопок
+        # for idx, row in df.iterrows():
+
+        #     # Считаем количество кнопок
+        #     non_empty_count = row[response_columns].notna().sum()
+            
+        #     if row["buttons_in_row"] >= non_empty_count:
+        #         return False, None, f"Количество кнопок в строке не может привышать количество вариантов ответов (вопрос №{row['question_num']}, опросник {sheet_name})"
         
-        if not df["question"].apply(lambda x: 12 <= len(str(x)) <= 250).all():
-            return False, None, f"Длина текста в колонке 'question' должна быть от 12 до 250 символов, колонка не может быть пустой (опросник {sheet_name})"
+        if not df["question"].apply(lambda x: 5 <= len(str(x)) <= 250).all():
+            return False, None, f"Длина текста в колонке 'question' должна быть от 5 до 250 символов, колонка не может быть пустой (опросник {sheet_name})"
         
-        if not df["comment"].apply(lambda x: pd.isna(x) or 12 <= len(str(x)) <= 120).all():
-            return False, None, "Длина значений в колонке 'comment' должна находиться в диапозоне от 12 до 120 символов (опросник {sheet_name})"
+        if not df["comment"].apply(lambda x: pd.isna(x) or 5 <= len(str(x)) <= 250).all():
+            return False, None, "Длина значений в колонке 'comment' должна находиться в диапозоне от 5 до 250 символов (опросник {sheet_name})"
         
         choice_issues = df.loc[
             df["question_type"].isin(("single_choice", "multiple_choice")) & 
@@ -103,7 +115,7 @@ def all_surveys_validator(url):
     # Читаем только нужные листы с сохранением порядка
     dfs = {}
     for sheet in sheet_order:
-        if sheet not in ["Обозначения", "Пример", "Шаблон"]:
+        if sheet not in ["Обозначения", "Пример", "Шаблон", "Technical Sheet"]:
             df = pd.read_excel(xls, sheet_name=sheet, dtype=columns_as_strings)
             dfs[sheet] = df
 
@@ -210,7 +222,7 @@ def duration_validator(duration):
     # Проверяем корректность ввода
     try:
         number = int(duration.strip())
-        correct = 2 <= number <= 90
+        correct = 1 <= number <= 90
     except ValueError:
         correct = False 
 
@@ -229,11 +241,15 @@ def duration_validator(duration):
 def participants_validator(usernames):
 
     # Загатовки для проверки
-    forbidden_chars = r"[@!{}()*^$#]"
+    forbidden_chars = r"[!{}()*^$#]"
     correct = True
+    cleaned_usernames = []
 
      # Итерируемся по каждому участнику
     for username in map(str.strip, usernames.split(',')):
+        if username.startswith('@'):
+            username = username[1:]
+
         if ' ' in username:
             error = f"Username '{username}' содержит пробелы."
             correct = False
@@ -246,6 +262,12 @@ def participants_validator(usernames):
         elif not (5 <= len(username) <= 32):
             error = f"Длина username '{username}' должна быть от 5 до 32 символов."
             correct = False
+
+        # Приводим username к нижнему регистру
+        username = username.lower()
+
+        # Добавляем username в базу
+        cleaned_usernames.append(username)
     
     # Формируем текст сообщения
     if correct:
@@ -253,8 +275,10 @@ def participants_validator(usernames):
     else:
         message_text = WRONG_PARTICIPANTS.format(error)
 
+    cleaned_usernames_str = ', '.join(cleaned_usernames)
+
     # Возвращаем текст и корректность участников
-    return correct, message_text
+    return correct, message_text, cleaned_usernames_str
 
 
 # 7.0. Вспомогательная функция для проверки ввода времени
@@ -283,7 +307,7 @@ def pt_validator(input_string):
     
     # Проверяем, что количество временных точек от 1 до 12
     if not (1 <= len(time_points) <= 12):
-        return False, WRONG_TP_AMOUNT
+        return False, WRONG_TP_AMOUNT, None
     
     # Определяем регулярное выражение для проверки формата времени hh:mm
     time_pattern = re.compile(r"^(\d{1,2}:\d{2})$" + "|" + delimiter_pattern.join(["(\d{1,2}:\d{2})"] * 2))
@@ -329,7 +353,7 @@ def pt_validator(input_string):
         else:  
             # Проверяем, является ли точка временем
             if not parse_time(tp):
-                return False, WRONG_TIME_FORMAT.format(tp)
+                return False, WRONG_TIME_FORMAT.format(tp), None
             normalized_tp = normalize_time_str(tp)
             time_points[i] = normalized_tp
 
@@ -376,4 +400,31 @@ def pt_validator_multi(input_string, current_pts, base_surveys):
     # Возвращаем корректность, обновленный список времени для отправки и ответ
     return True, None, current_pts, survey_to_set, next_survey, penult_survey
 
+
+# 8. Валидатор даты
+def date_validator(input_date):
+
+    print(input_date)
+    pattern = r'/set_start_date\s+(\d{1,2})\.(\d{1,2})\.(\d{4})'
+    data_match = re.search(pattern, input_date)
     
+    if not data_match:
+        print('no data match')
+        return False, None, NO_DATE_ERROR
+
+    try:
+        print('we are here')
+        day, month, year = data_match.groups()
+        date_str = f"{day.zfill(2)}.{month.zfill(2)}.{year}"
+        parsed_date = datetime.strptime(date_str, "%d.%m.%Y")
+        start_date = f"datetime('{parsed_date.strftime('%Y-%m-%dT%H:%M:%SZ')}')"
+        date_msg = parsed_date.strftime("%d.%m.%Y")
+    except Exception:
+        return False, None, NO_DATE_ERROR
+
+    # Проверка свежести даты
+    tomorrow = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    if parsed_date < tomorrow:
+        return False, None, TOO_EARLY_DATE_ERROR
+    
+    return True, start_date, SUCCESS_SET_START_DATE.format(date_msg)
