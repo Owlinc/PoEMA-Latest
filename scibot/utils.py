@@ -3,6 +3,7 @@ import json
 import requests
 from datetime import datetime, timedelta
 from io import StringIO, BytesIO
+from urllib.parse import urlparse
 import csv
 import ydb
 import pandas as pd
@@ -15,12 +16,23 @@ from validators import *
 
 
 # БАЗОВЫЕ ФУНКЦИИ
-# 1. Функция для отправки сообщения c текстом
+# 1.1. Функция для отправки сообщения c текстом
 def send_message(chat_id, text):
     # text = text.replace("_", "\_")
     url = URL + f"sendMessage?parse_mode=markdown&chat_id={chat_id}&text={text}"
     print(url)
     requests.get(url)
+
+# 1.2. Функция для отправки сообщения c текстом и фото
+def send_photo_message(chat_id, text, image):
+    url = URL + "sendPhoto"
+    data = {
+        'photo': image,
+        'chat_id': chat_id,
+        'caption': text,
+        'parse_mode': 'markdown'
+    }
+    requests.post(url, data=data)
 
 
 # 2. Функция для отправки сообщения c текстом и клавиатурой
@@ -69,12 +81,11 @@ def get_file_url(file_id):
     return file_url
 
 
-# 5. Функция для загрузки файл в storage
+# 5.1. Функция для загрузки файл в storage
 def upload_file_to_storage(file_url, participant_id, file_name):
 
     # Скачиваем файл
     response = requests.get(file_url)
-    print(response)
 
     # Выгружаем файл с записями в хранилище
     s3.put_object(
@@ -84,6 +95,24 @@ def upload_file_to_storage(file_url, participant_id, file_name):
 
     # Возвращаем ссылку на файл
     return(EXPORT_LINK + file_name)
+
+# 5.2. Функция для удаления файлов из object storage
+def delete_file(file_url):
+
+    parsed = urlparse(file_url)
+    file_name = parsed.path.split('/')[-1]
+    
+    try:
+        # Удаляем файл из хранилища
+        response = s3.delete_object(
+            Bucket=BACKET_NAME, 
+            Key=file_name
+        )
+        print(response)
+        print(f"Файл {file_name} успешно удален из хранилища")
+
+    except Exception as e:
+        print(f"Ошибка при удалении файла {file_name}: {str(e)}")
     
 
 # 6. Функция для формирования клавитуры с вариантами опросов для опросника
@@ -219,4 +248,3 @@ def general_handle_tl(chat_id, study_info, message_text):
         # Информируем об успешности этапа
         send_message(chat_id, message_text)
         return {'statusCode': 200} 
-
