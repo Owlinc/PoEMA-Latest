@@ -20,8 +20,8 @@ REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%
 def get_beeps_data(participant_id):
     
     sql_request = f"""
-        SELECT * FROM {BEEPS_TABLE}
-        WHERE study_id = '{participant_id}'; ;
+        SELECT * FROM {BEEPS_TABLE} 
+        WHERE study_id = '{participant_id}' and closed = true LIMIT 1000;
         """
     ydb_raw_output = POOL.retry_operation_sync(
         lambda s: s.transaction().execute(
@@ -37,8 +37,18 @@ def get_beeps_data(participant_id):
         data_dict = {}
         # Меняем формат бинарных данных
         for key in row:
-            if isinstance(row[key], bytes):
-                data_dict[key] = row[key].decode('utf-8')
+            
+            value = row[key]
+            print(key, type(value))
+            
+            if isinstance(value, bytes):
+                data_dict[key] = value.decode('utf-8')
+            elif "time" in key:
+                print(key, value)
+                try:
+                    data_dict[key] = datetime.fromtimestamp(value).strftime('%Y-%m-%d %H:%M:%S')
+                except:
+                    data_dict[key] = value
             else:
                 data_dict[key] = row[key]
         rows_list.append(data_dict)
@@ -145,7 +155,7 @@ def upload_surveys_sql(survey_df, chat_id):
         str_id = f"{index:04d}_" + ''.join(random.choices(characters, k=6))
 
         values.append(
-            f"('{str_id}', '{chat_id}', '{row['survey_name']}', {row['question_num']}, '{row['question_type']}', {row['rows_amount']}, "
+            f"('{str_id}', '{chat_id}', '{row['survey_name']}', {row['question_num']}, '{row['question_type']}', {row['buttons_in_row']}, "
             f"'{row['question']}', '{row['comment']}', '{row['response_1']}', '{row['response_2']}', '{row['response_3']}', "
             f"'{row['response_4']}', '{row['response_5']}', '{row['response_6']}', '{row['response_7']}', '{row['response_8']}', "
             f"'{row['response_9']}', '{row['response_10']}')"
@@ -156,7 +166,7 @@ def upload_surveys_sql(survey_df, chat_id):
         try:
             if values:
                 sql_request = f"""
-                    INSERT INTO {SURVEYS_TABLE} (id, study_id, survey_name, question_num, question_type, rows_amount, question, comment, response_1, response_2, response_3, response_4, response_5, response_6, response_7, response_8, response_9, response_10) 
+                    INSERT INTO {SURVEYS_TABLE} (id, study_id, survey_name, question_num, question_type, buttons_in_row, question, comment, response_1, response_2, response_3, response_4, response_5, response_6, response_7, response_8, response_9, response_10) 
                     VALUES {', '.join(values)};
                 """
                 print(sql_request)
@@ -221,7 +231,7 @@ def update_study(participant_id, update_dict):
 
     # Форматер значений
     def format_value(value):
-        if isinstance(value, (int, float)):  # Для числовых
+        if isinstance(value, (int, float)) or 'datetime' in value:  # Для числовых
             return f"{value}"
         elif isinstance(value, str):  # Для текстовых
             return f"'{value}'"
@@ -272,12 +282,12 @@ def delete_study(participant_id):
         return False
 
 # 4.2. Функция для удаления информации об участниках
-def delete_participation(participant_id):
+def delete_participation(study_id):
 
     # Очистка данных об исследовании
     remove_particip = f"""
         DELETE FROM {PARTICIPATION_TABLE}
-        WHERE study_id = '{participant_id}';
+        WHERE study_id = '{study_id}';
         """
     try:
         POOL.retry_operation_sync(
@@ -289,6 +299,26 @@ def delete_participation(participant_id):
 
     except Exception as error:
         return False
+
+# 4.3. Функция для удаления бипов участников
+def delete_beeps(study_id):
+
+    # Очистка данных об исследовании
+    remove_particip = f"""
+        DELETE FROM {BEEPS_TABLE}
+        WHERE study_id = '{study_id}';
+        """
+    try:
+        POOL.retry_operation_sync(
+            lambda s: s.transaction().execute(
+                remove_particip,
+                commit_tx=True,
+                settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+            ))
+
+    except Exception as error:
+        return False
+
 
 # 5. Функция для инициации участия
 def initaite_particip(particip_username, study_id):
@@ -341,4 +371,3 @@ def get_study_surveys(study_id):
     except Exception as error:
         print(error)
         return error
-
