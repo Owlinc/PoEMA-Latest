@@ -56,11 +56,15 @@ def handler(event, context):
                 if study_status == "study_cleaning":
                     send_message(chat_id, SUCCESS_CLEAN)
                     update_study(chat_id, {'status': previous_status, 'previous_status': 'study_cleaning'})
+                    
                     delete_study(chat_id)
                     delete_survey_sql(chat_id)
                     delete_participation(chat_id)
+                    delete_beeps(chat_id)
+                    delete_file(study_info['agreement_file'].decode('utf-8'))
 
                 else:
+                    print(1)
                     send_message(chat_id, NON_ACTIVE_KEYBOARD)
             
             elif callback == "clean_cancel":
@@ -70,6 +74,7 @@ def handler(event, context):
                     send_message(chat_id, CLEAN_CANCEL)
 
                 else:
+                    print(2)
                     send_message(chat_id, NON_ACTIVE_KEYBOARD)
 
             # Нужен ли входной опросник
@@ -91,6 +96,7 @@ def handler(event, context):
                         update_study(chat_id, {'status': "exit_survey_decision", 'previous_status': study_status})
 
                 else:
+                    print(3)
                     send_message(chat_id, NON_ACTIVE_KEYBOARD)
 
             # Нужен ли выходной опросник
@@ -125,6 +131,7 @@ def handler(event, context):
                         send_message(chat_id, SURVEY_SETTING_END.format(base_surveys[0]))
 
                 else:
+                    print(4)
                     send_message(chat_id, NON_ACTIVE_KEYBOARD)
 
             # Сохранение входного опросника
@@ -139,6 +146,7 @@ def handler(event, context):
                     update_study(chat_id, {'enterance_survey': enter_survey})
 
                     # Проверяем, остались ли у нас опросники для выходного исследования
+                    study_info = get_study_info(chat_id)
                     base_surveys, base_surveys_str = get_base_surveys(chat_id, study_info)
                     bs_amount = len(base_surveys)
 
@@ -161,6 +169,7 @@ def handler(event, context):
                             'previous_status': study_status})
                 
                 else:
+                    print(5)
                     send_message(chat_id, NON_ACTIVE_KEYBOARD)
 
             # Сохранение выходного опросника
@@ -188,6 +197,7 @@ def handler(event, context):
                         'previous_status': study_status})
 
                 else:
+                    print(6)
                     send_message(chat_id, NON_ACTIVE_KEYBOARD)
 
             # Решение об одном времени для всех опросников
@@ -229,6 +239,7 @@ def handler(event, context):
                         update_study(chat_id, {'status': 'survey_added'})
 
                 else:
+                    print(7)
                     send_message(chat_id, NON_ACTIVE_KEYBOARD)
 
             # Запись времени прохождения для опросника
@@ -272,7 +283,7 @@ def handler(event, context):
                 return {'statusCode': 200}
 
             # /clean_study
-            if "/clean_study" in message_text:
+            elif "/clean_study" in message_text:
                 if study_status == "not_initiated":
                     send_message(chat_id, NOTHING_TO_CLEAN)
                     return {'statusCode': 200}
@@ -282,7 +293,7 @@ def handler(event, context):
                     return {'statusCode': 200}
 
             # /get_data
-            if "/get_data" in message_text:
+            elif "/get_data" in message_text:
             
                 if study_status != "launched":
                     send_message(chat_id, DATA_ERROR_NOT_LAUNCHED)
@@ -293,8 +304,29 @@ def handler(event, context):
                 send_message(chat_id, text_message)
                 return {'statusCode': 200}
 
+            # /set_start_date
+            elif "/set_start_date" in message_text:
+            
+                if study_status != "launched":
+                    send_message(chat_id, SDATE_ERROR_NOT_LAUNCHED)
+                    return {'statusCode': 200}
+
+                elif message_text.strip() == '/set_start_date':
+                    # Информируем о том, как указаывать стартовую дату
+                    send_message(chat_id, SET_START_DATE_INFO)
+                    return {'statusCode': 200}
+
+                # Проверяем введенную дату
+                correct, start_date, answer = date_validator(message_text)
+                if correct:
+                    update_study(chat_id, {'start_date': start_date})
+
+                # Информируем о результате ввода
+                send_message(chat_id, answer)
+                return {'statusCode': 200}
+
             # /analyse_opens
-            if "/analyse_opens" in message_text:
+            elif "/analyse_opens" in message_text:
 
                 if study_status != "launched":
                     send_message(chat_id, OPENS_ERROR_NOT_LAUNCHED)
@@ -357,7 +389,8 @@ def handler(event, context):
                     if message['message']['document']['file_name'].endswith(".xlsx"):
                         file_id = message['message']['document']['file_id']
                         file_url = get_file_url(file_id)
-                        survey_file_url = upload_file_to_storage(file_url, chat_id, SURVEY_STRUCT_FILE_NAME.format(chat_id))
+                        survey_name = SURVEY_STRUCT_FILE_NAME.format(chat_id)
+                        survey_file_url = upload_file_to_storage(file_url, chat_id, survey_name)
                         
                         # Проверяем корректнотсь заполнения опросника
                         correct, survey_df, response, keyboard, surveys_name, surveys_amount = all_surveys_validator(survey_file_url)
@@ -367,13 +400,17 @@ def handler(event, context):
                             # Меняем стату в зависимости от количества опросов
                             if surveys_amount == 1:
                                 send_message(chat_id, response)
-                                update_study(chat_id, {'status': 'survey_added'})
+
+                                # Загружаем опросник(и) в базу
+                                upload_surveys_sql(survey_df, chat_id)
+                                base_surveys, base_surveys_str = get_base_surveys(chat_id, study_info)
+                                update_study(chat_id, {'status': 'survey_added', 'base_surveys': base_surveys_str})
                             else:
+                                # Загружаем опросник(и) в базу
+                                upload_surveys_sql(survey_df, chat_id)
                                 send_message_with_k(chat_id, response, keyboard)
                                 update_study(chat_id, {'status': 'several_surveys_added'})
 
-                            # Загружаем опросник(и) в базу
-                            upload_surveys_sql(survey_df, chat_id)
                         else:
                             send_message(chat_id, SURVEY_ERROR.format(response))
                     else:
@@ -394,7 +431,14 @@ def handler(event, context):
                     if message['message']['document']['file_name'].endswith(".pdf"):
                         file_id = message['message']['document']['file_id']
                         file_url = get_file_url(file_id)
-                        agreement_file = upload_file_to_storage(file_url, chat_id, AGGR_FILE_NAME.format(chat_id))
+                        random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=3))
+                        comb_name = f"{chat_id}_{random_suffix}"
+                        aggr_file_name = f"{AGGR_FILE_NAME.format(comb_name)}"
+
+                        print(f"aggr_name: {aggr_file_name}")
+                        agreement_file = upload_file_to_storage(file_url, chat_id, aggr_file_name)
+                        print(f"agreement_file: {agreement_file}")
+                        
                         send_message(chat_id, CORRECT_AGREEMENT)
                         update_study(chat_id, {'status': 'agreement_added', 'agreement_file': agreement_file})
                     else:
@@ -410,17 +454,20 @@ def handler(event, context):
                 if correct:
                     update_study(chat_id, {'status': 'duration_added', 'duration': duration})
 
-                # Информируем об успешности этапа
-                send_message(chat_id, message_text)
+                    # Информируем об успешности этапа
+                    send_photo_message(chat_id, message_text, USERNAME_GUIDE)
+                
+                else:
+                    send_message(chat_id, message_text)
 
             # Статус 7: длительность исследования указана, ожидаются юзернеймы участников +
             elif study_status == "duration_added":
 
                 # Если все ок с участниками, добавляем их
-                correct, response = participants_validator(message_text)
+                correct, response, participants = participants_validator(message_text)
                 if correct:
 
-                    update_study(chat_id, {'participants_usernames': message_text})
+                    update_study(chat_id, {'participants_usernames': participants})
 
                     # Получаем базовые опросники
                     base_surveys = study_info["base_surveys"].decode('utf-8').split(',')
@@ -513,16 +560,33 @@ def handler(event, context):
 
                 completion_tl = format_sev_surveys(study_info['completion_tl'].decode('utf-8'), "мин.")
                 prompting_time = format_sev_surveys(study_info['prompting_time'].decode('utf-8'))
+                base_surveys, base_surveys_str = get_base_surveys(chat_id, study_info)
+
+                enterance_survey = study_info['enterance_survey']
+                exit_survey = study_info['exit_survey']
+                if enterance_survey:
+                    enterance_survey = enterance_survey.decode('utf-8')
+                else: 
+                    enterance_survey = '–'
+                if exit_survey:
+                    exit_survey = exit_survey.decode('utf-8')
+                else:
+                    exit_survey = '–'
 
                 send_message_with_k(
                     chat_id, 
                     LAUNCH_STUDY.format(
                         study_info['name'].decode('utf-8'), 
                         study_info['description'].decode('utf-8').replace("_", "\_"), 
+                        study_info['participants_usernames'].decode('utf-8').replace("_", "\\_"),
+
+                        enterance_survey,
+                        base_surveys_str,
+                        exit_survey,
+
                         completion_tl,
-                        study_info['duration'], 
                         prompting_time,
-                        study_info['participants_usernames'].decode('utf-8').replace("_", "\\_")),
+                        study_info['duration']), 
                     launch_keyboard())
 
         else:
@@ -532,5 +596,3 @@ def handler(event, context):
         'statusCode': 200,
         'body': 'Everityhing is cool: beeps are beeping, schedules are scheduling, and users are using!'
         }
-        
-        
