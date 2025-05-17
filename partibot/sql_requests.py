@@ -3,6 +3,7 @@ import time
 import re
 import ydb
 from datetime import datetime, timedelta
+from collections import defaultdict, Counter
 
 # ДРУГИЕ СКРИПТЫ
 from config import *
@@ -29,13 +30,13 @@ def get_user_beeps():
                 lambda s: s.transaction().execute(
                     sql_request,
                     commit_tx=True,
-                    settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+                    settings=ydb.BaseRequestSettings().with_timeout(5).with_operation_timeout(3)
                 )
             )
             break
 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred at getting user beeps: {e}")
             print("Retrying in 1 second...")
             time.sleep(1)
 
@@ -62,24 +63,43 @@ def get_survey_quest(study_id, question_id, survey):
 
 
 # 3. Функция для обновления бипа
-def update_beep_db(beep_id, response, message_id):
+def update_beep_db(beep_id, message_id, response=None):
 
-    print('we are here')
-    print(message_id)
+    print(beep_id, message_id, response)
 
-    sql_update = f"""
-        UPDATE {BEEPS_TABLE}
-        SET message_id = {message_id}, answer = '{response}', closed = True
-        WHERE beep_id = {beep_id};
-    """
-    return POOL.retry_operation_sync(
-        lambda s: s.transaction().execute(
-            sql_update,
-            commit_tx=True,
-            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-        )
-    )
+    CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
+    # Записываем ответ и закрываем beep
+    if response:
+        sql_update = f"""
+            UPDATE {BEEPS_TABLE}
+            SET message_id = {message_id}, answer = '{response}', closed = True, time_answered = datetime('{CURR_TIME}')
+            WHERE beep_id = {beep_id};
+        """
+    
+    # Записываем ID отправленного бипа
+    else:
+        sql_update = f"""
+            UPDATE {BEEPS_TABLE}
+            SET message_id = {message_id}
+            WHERE beep_id = {beep_id};
+        """       
+
+    for wait_seconds in range(1, 15):  # от 1 до 15 секунд
+        try:
+            return POOL.retry_operation_sync(
+                lambda s: s.transaction().execute(
+                    sql_update,
+                    commit_tx=True,
+                    settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+                )
+            )
+
+        except Exception as e:
+            print(f"An error occurred at updating beeps: {e}")
+            print("Retrying...")
+            time.sleep(wait_seconds)
+    
 
 # 4. Функция для получения следующего бипа
 def get_next_beep(user_id, message_id, question_id):
@@ -97,6 +117,7 @@ def get_next_beep(user_id, message_id, question_id):
     
     time_to_send = last_beep_data['time_to_send']
     time_to_send = datetime.fromtimestamp(time_to_send).strftime('%Y-%m-%dT%H:%M')
+    print(f'focal time to send: {time_to_send}')
 
     get_next_beep_rq = f"""
         SELECT * FROM {BEEPS_TABLE}
@@ -113,6 +134,7 @@ def get_next_beep(user_id, message_id, question_id):
     except Exception as error:
         next_beep = None
 
+    print(f'next beep defind: {next_beep}')
     return next_beep
 
 
@@ -202,7 +224,7 @@ def check_enterance_beeps():
             break
                 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred at checking enterance beeps: {e}")
             print("Retrying in 1 second...")
             time.sleep(1)
 
@@ -214,6 +236,7 @@ def check_exit_beeps():
             get_query = f"""
                 SELECT participant_id
                 FROM {BEEPS_TABLE}
+                WHERE exit_beep_handled IS NULL
                 GROUP BY participant_id
                 HAVING 
                     COUNT_IF(exit_beep = TRUE) > 0 AND
@@ -226,14 +249,33 @@ def check_exit_beeps():
                 settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
             ))[0].rows
 
+            # Добавляем участников в базу отработки
             users_to_handle = []
             for user in users_to_handle_raw:
                 users_to_handle.append(user['participant_id'].decode('utf-8'))
+
+            # Помечаем участников отработанными
+            if users_to_handle:
+                
+                ids_formatted = ', '.join(f"'{user}'" for user in users_to_handle)
+                mark_handled_query = f"""
+                    UPDATE {BEEPS_TABLE}
+                    SET exit_beep_handled = TRUE
+                    WHERE participant_id IN ({ids_formatted});
+                """
+                POOL.retry_operation_sync(
+                    lambda s: s.transaction().execute(
+                        mark_handled_query,
+                        commit_tx=True,
+                        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+                    )
+                )
+
+            print(f"Закрываю бипы у: {users_to_handle}")
             return(users_to_handle)
-            break
                 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred at checking exit beeps: {e}")
             print("Retrying in 1 second...")
             time.sleep(1)  
 
@@ -259,7 +301,7 @@ def upload_beeps(beeps_dict, survey_type="base"):
             break
 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred at uploading beeps: {e}")
             print("Retrying in 1 second...")
             time.sleep(1)
 
@@ -301,35 +343,9 @@ def upload_beeps(beeps_dict, survey_type="base"):
             break
                 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred at uploading beeps: {e}")
             print("Retrying in 1 second...")
             time.sleep(1)
-
-
-# 2. Функция для определения типа вопроса (больше не используется)
-def get_question_type(study_id, question_id):
-
-    while True:
-        try:
-            sql_request = f"""
-                SELECT question_type
-                FROM {SURVEYS_TABLE}
-                WHERE study_id = '{study_id}' AND question_num = {question_id}
-                """
-            quest_type = POOL.retry_operation_sync(
-                lambda s: s.transaction().execute(
-                    sql_request,
-                    commit_tx=True,
-                    settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-                ))[0].rows[0]['question_type']
-            print(quest_type)
-            return quest_type
-            break
-
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            print("Retrying in 1 second...")
-            time.sleep(1)    
 
 
 # 3. Функция для проверки окончания исследования
@@ -350,14 +366,19 @@ def check_study_end(participant_id):
                     commit_tx=True,
                     settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
                 ))[0].rows[0]['most_recent_expire_time']
-                
-            latest_beep_time = datetime.fromtimestamp(latest_beep_time).strftime('%Y-%m-%dT%H:%M:%SZ')
+            
+            if latest_beep_time:
+                latest_beep_time = datetime.fromtimestamp(latest_beep_time).strftime('%Y-%m-%dT%H:%M:%SZ')
+            else:
+                return False
             break
 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred at getting last beep time sent: {e}")
             print("Retrying in 1 second...")
             time.sleep(1)
+
+    print('checked once')
 
     # 3.2. Проверяем нет ли хотя бы одной строки, которая была бы равна [expected]
     while True:
@@ -369,7 +390,9 @@ def check_study_end(participant_id):
                 END AS study_end
             FROM {BEEPS_TABLE}
             WHERE expire_time = datetime('{latest_beep_time}')
-            AND answer NOT LIKE '[expected]';
+            AND answer NOT LIKE '[expected]'
+            AND participant_id = '{participant_id}'
+            AND study_end_wrote is NULL
             """
 
             study_end = POOL.retry_operation_sync(
@@ -378,39 +401,44 @@ def check_study_end(participant_id):
                     commit_tx=True,
                     settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
                 ))[0].rows[0]['study_end']   
-            break
+            
+            print('checked two')
+
+            # Помечаем участников отработанными
+            if study_end:
+                
+                wrote_study_end_query = f"""
+                UPDATE {BEEPS_TABLE}
+                SET study_end_wrote = true
+                WHERE participant_id = '{participant_id}'
+                AND expire_time = datetime('{latest_beep_time}')
+                """
+                POOL.retry_operation_sync(
+                    lambda s: s.transaction().execute(
+                        wrote_study_end_query,
+                        commit_tx=True,
+                        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+                    )
+                )
+            
+            # Возвращаем True, если у нас закончилось исследование и False – в обратном случае
+            print(f'study_end: {study_end} for {participant_id}')
+            return bool(study_end)
 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred at checking study end: {e}")
             print("Retrying in 1 second...")
             time.sleep(1) 
-
-    # Возвращаем True, если у нас закончилось исследование и False – в обратном случае
-    print(f'study_end {study_end}')
-    return bool(study_end)
 
 
 # 4. Функция для обработки просроченных бипов (UPD)
 def handle_expired_beeps():
 
-    # 4.1. Меняем [expected] на [expired]
+    # 4.1. Получаем пользователей для проверки (лист)
     REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M')
-    update_query = f"""
-    UPDATE {BEEPS_TABLE}
-    SET answer = '[expired]', closed = True
-    WHERE CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%' AND closed != True;
-    """
-    POOL.retry_operation_sync(
-    lambda s: s.transaction().execute(
-        update_query,
-        commit_tx=True,
-        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-    ))
-
-    # 4.2. Получаем пользователей для проверки (лист)
     get_query = f"""
     SELECT DISTINCT participant_id FROM {BEEPS_TABLE}
-    WHERE CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%';
+    WHERE CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%' AND closed == false;
     """
     users_to_check_raw = POOL.retry_operation_sync(
     lambda s: s.transaction().execute(
@@ -421,41 +449,14 @@ def handle_expired_beeps():
     users_to_check = []
     for user in users_to_check_raw:
         users_to_check.append(user['participant_id'].decode('utf-8'))
+    if len(users_to_check) == 0:
+        users_to_check = None
 
-    # 4.3. Создаем словари для блокировки участия в опросе 
-    get_query_sec = f"""
-    SELECT DISTINCT participant_id, message_id
-    FROM {BEEPS_TABLE}
-    WHERE answer = "[expired]" AND message_id IS NOT NULL AND CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%' ;
-    """
-    dicts_to_edit_raw = POOL.retry_operation_sync(
-    lambda s: s.transaction().execute(
-        get_query_sec,
-        commit_tx=True,
-        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-    ))[0].rows
-    
-    dicts_to_edit = []
-    for user in dicts_to_edit_raw:
-        messsage_to_edit = {}
-        messsage_to_edit['chat_id'] = user['participant_id'].decode('utf-8')
-        messsage_to_edit['message_id'] = user['message_id']
-        dicts_to_edit.append(messsage_to_edit)  
-
-    # Возвращаем лист с пользователями для дальнейшей проверки и словарь для блокировки участия в опросе   
-    return users_to_check, dicts_to_edit
-    
-
-# 5. Функция для обновления бипов
-def update_beep_data(message_id, user_id):
-
-    print("i'm writing message id")
-    
-    REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M')
+    # 4.2. Меняем [expected] на [expired]
     update_query = f"""
     UPDATE {BEEPS_TABLE}
-    SET message_id = {message_id}
-    WHERE (CAST(time_to_send AS String) LIKE '{REAL_CURR_TIME}%' AND participant_id = '{user_id}') OR ((enterance_beep = True or exit_beep = True) and message_id is NULL);
+    SET answer = '[expired]', closed = True
+    WHERE CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%' AND closed == false;
     """
     POOL.retry_operation_sync(
     lambda s: s.transaction().execute(
@@ -464,6 +465,77 @@ def update_beep_data(message_id, user_id):
         settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
     ))
 
+    # 4.3. Создаем словари для блокировки участия в опросе 
+    get_query_sec = f"""
+    SELECT participant_id, message_id
+    FROM {BEEPS_TABLE}
+    WHERE answer = "[expired]" AND message_id IS NOT NULL AND CAST(expire_time AS String) LIKE '{REAL_CURR_TIME}%' 
+    """
+    dicts_to_edit_raw = POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        get_query_sec,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))[0].rows
+    
+    # Группируем по participant_id
+    by_participant = defaultdict(list)
+    for user in dicts_to_edit_raw:
+        pid = user['participant_id'].decode('utf-8')
+        mid = user['message_id']
+        by_participant[pid].append(mid)
+
+    dicts_to_edit = []
+    for pid, mids in by_participant.items():
+
+        # Случай 1: был только один вопрос — берем его
+        print(f'len(mids): {len(set(mids))}')
+        if len(set(mids)) == 1:
+            dicts_to_edit.append({'chat_id': pid, 'message_id': mids[0]})
+        else:
+            # Случай 2: message_id встречается один раз среди нескольких — берем только уникальные
+            mid_counts = Counter(mids)
+            for mid, count in mid_counts.items():
+                if count == 1:
+                    dicts_to_edit.append({'chat_id': pid, 'message_id': mid})
+
+    # Возвращаем лист с пользователями для дальнейшей проверки и словарь для блокировки участия в опросе   
+    return users_to_check, dicts_to_edit
+    
+
+# 5.1. Функция для обновления бипов (для первого вопроса)
+def update_beep_data(message_id, user_id):
+    
+    REAL_CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M')
+    CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+    update_query = f"""
+    UPDATE {BEEPS_TABLE}
+    SET message_id = {message_id}, time_sent = datetime('{CURR_TIME}')
+    WHERE participant_id = '{user_id}' AND ((CAST(time_to_send AS String) LIKE '{REAL_CURR_TIME}%') OR (enterance_beep = True or exit_beep = True)) AND message_id is NULL
+    """
+    POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        update_query,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))
+
+# 5.2. Функция для обновления бипов (для последующих вопросов)
+def set_beep_sent(beep_id):
+    
+    CURR_TIME = (datetime.utcnow() + timedelta(hours=UTC_SHIFT)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    update_query = f"""
+    UPDATE {BEEPS_TABLE}
+    SET time_sent = datetime('{CURR_TIME}')
+    WHERE beep_id == {beep_id};
+    """
+    POOL.retry_operation_sync(
+    lambda s: s.transaction().execute(
+        update_query,
+        commit_tx=True,
+        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+    ))
 
 # 6. Удаление предыдущих биопв
 def delete_beeps(participant_id):
@@ -521,30 +593,50 @@ def get_beep_to_write(participant_id):
 
 # 7.2. Получение информации о бипе по его ID
 def get_beep_data(beep_id):
-
-    print('its beep prpoblem')
     sql_request = f"""
         SELECT * FROM {BEEPS_TABLE}
         WHERE beep_id == {beep_id};
-        """
+    """
 
-    beep = POOL.retry_operation_sync(
-    lambda s: s.transaction().execute(
-        sql_request,
-        commit_tx=True,
-        settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-    ))[0].rows[0]
+    start_time = time.time()
+    timeout_seconds = 13
 
-    question_id = beep['question_id']
-    message_id = beep['message_id']
-    question_type = beep['question_type'].decode('utf-8')
-    
-    return question_id, message_id, question_type
+    while time.time() - start_time < timeout_seconds:
+        try:
+            result = POOL.retry_operation_sync(
+                lambda s: s.transaction().execute(
+                    sql_request,
+                    commit_tx=True,
+                    settings=ydb.BaseRequestSettings()
+                        .with_timeout(4)      # таймаут операции
+                        .with_operation_timeout(2)         # макс. время попытки
+                )
+            )
+
+            rows = result[0].rows
+            if not rows:
+                print("Данных с таким beep_id не найдено.")
+                return None
+
+            beep = rows[0]
+            question_id = beep['question_id']
+            message_id = beep['message_id']
+            question_type = beep['question_type'].decode('utf-8')
+
+            return question_id, message_id, question_type
+
+        except Exception as e:
+            print(f"Попытка не удалась: {e}")
+            time.sleep(1)
+
+    print("Не удалось получить данные за 15 секунд.")
+    return "error", "error", "error"
 
 
 # 8. Изменение часового пояса бипов
 def change_beeps_tz(participant_id, change_value):
 
+    change_value = -change_value
     sign = '+' if change_value >= 0 else '-'
     abs_value = abs(change_value)
     print(change_value, sign, abs_value)
@@ -684,7 +776,7 @@ def update_particip_by_id(particip_id, update_dict):
             break
 
         except Exception as e:
-            print(f"An error occurred: {e}")
+            print(f"An error occurred at updating participant by id: {e}")
             print("Retrying in 1 second...")
             time.sleep(1)
     
@@ -706,12 +798,21 @@ def get_particip_info(particip_data, particip_id=False):
         WHERE particip_username == '{particip_data}';
         """
 
-    results = POOL.retry_operation_sync(
-        lambda s: s.transaction().execute(
-            sql_request,
-            commit_tx=True,
-            settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
-    ))[0].rows
+    while True:
+        try:
+
+            results = POOL.retry_operation_sync(
+                lambda s: s.transaction().execute(
+                    sql_request,
+                    commit_tx=True,
+                    settings=ydb.BaseRequestSettings().with_timeout(3).with_operation_timeout(2)
+            ))[0].rows
+            break
+
+        except Exception as e:
+            print(f"An error occurred at getting particpant info: {e}")
+            print("Retrying in 1 second...")
+            time.sleep(1)
 
     # Возвращаем результаты
     if len(results) > 0:
@@ -861,11 +962,9 @@ def tz_changes_increase(participant_id):
     # Получаем текущее кол-во изменений часовой зоны
     tz_changes = get_particip_settings(participant_id)['tz_changes']
     print(tz_changes)
-    print('tz_changes')
 
     # Увеличиваем кол-во изменений на 1
     tz_changes += 1
 
     # Записываем в базу
     update_particip_settings(participant_id, ["tz_changes"], [tz_changes])
-
